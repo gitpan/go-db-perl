@@ -1,0 +1,22 @@
+2005-01-31      - [cjm] Inititation of Changes file
+                - [cjm] load-go-into-db.pl will now check to see
+                        if GO/OBO ID actually exists
+
+2005-02-03      - [cjm] errors now go via specific err.xml file
+2005-04-16      - [cjm] added new test t/data/temporal.obo
+                         (plant stages)
+                        this was causing problems, now fixed
+                        (see go-perl Changes file)
+
+2006-04-04      - [cjm] added tests for logical definitions
+
+2006-09-11      - [cjm] API noews uses new term_subset table
+
+2006-09-11      - [cjm] Preparations for Chado
+                        Moved some code into new AppHandleAbstractSqlImpl module
+                        Code now works for loading into chado
+
+2006-10-18      - [cjm] Changed logical definition model
+                        fixed subset queries
+
+2006-11-27      - [cjm] GO::AppHandle->get_enriched_term_hash
