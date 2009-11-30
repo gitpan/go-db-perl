@@ -49,9 +49,8 @@ stmt_check(@$pl == 526);
 
 warn("test needs updated - check product types");
 my @types = map {$_->type} @$pl;
+print "TYPES: @types\n";
 stmt_check((grep {$_ eq 'faketype'} @types) == 1);
-print "@types\n";
-#die;
 
 # check negative annotations
 $pl = $apph->get_products({term=>8233, deep=>1});
@@ -94,19 +93,22 @@ stmt_note($t->n_deep_products());
 stmt_check($t->n_deep_products() == 526);
 $apph->filters->{speciesdb} = ["SGD"];
 $t = $apph->get_term("DNA binding");
-stmt_check($t->n_deep_products == 0);
+stmt_check(!$t->n_deep_products || $t->n_deep_products == 0);
 $apph->fill_count_table;
 $t = $apph->get_term("DNA binding");
 stmt_check($t->n_deep_products == 0);
 delete $apph->filters->{speciesdb};
 $t = $apph->get_term("DNA binding");
-stmt_check($t->n_deep_products == 0);
+stmt_note("n_deep_products=".$t->n_deep_products);
+#stmt_check($t->n_deep_products == 0);
+stmt_check($t->n_deep_products == 526);
 
 $apph->filters->{speciesdb} = ["FB"];
 $apph->filters->{evcodes} = ["IDA"];
+stmt_note("filling count table");
 $apph->fill_count_table;
 $t = $apph->get_term("DNA binding");
-stmt_note($t->n_deep_products);
+stmt_note("n_deep_products=".$t->n_deep_products);
 stmt_check($t->n_deep_products == 45);
 
 # load new data, with some trailing IDs

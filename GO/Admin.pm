@@ -1,4 +1,4 @@
-# $Id: Admin.pm,v 1.27 2005/10/17 18:57:52 miyasato Exp $
+# $Id: Admin.pm,v 1.48 2009/08/12 17:43:32 benhitz Exp $
 #
 # This GO module is maintained by Chris Mungall <cjm@fruitfly.org>
 #
@@ -37,7 +37,7 @@ use strict;
 use vars qw(@ISA);
 use FileHandle;
 
-use constant MAX_CVS_TRIES => 5;
+use constant MAX_CVS_TRIES => 10;
 
 our $GZIP = 'gzip -f';
 
@@ -45,19 +45,20 @@ our $GZIP = 'gzip -f';
 
 
 sub _valid_params {
-    return qw(dbname dbhost dbms dbuser dbauth dbport dbsocket data_root releasename tmpdbname godevdir sqldir workdir swissdir speciesdir administrator);
+    return qw(dbname dbhost dbms dbuser dbauth dbport dbsocket data_root releasename tmpdbname godevdir sqldir workdir swissdir uniprotdir speciesdir administrator use_reasoner);
 }
 
-sub pre_process_files_for_ieas {
+# sub pre_process_files_for_ieas {
 
-	### Call process_files_for_ieas.pl to remove IEAs from the gene_association files
-	### Added by AS on Feb 14, 2005
-        my $self = shift;
-	print STDERR ("Processing gene_association files to remove IEAs...\n\n");
-	print STDERR ("Calling process_files_for_ieas.pl:\n");
-	system ("process_files_for_ieas.pl", $self->data_root . "/gene-associations/");
-	print STDERR ("Processing gene_association files to remove IEAs complete.\n");
-}
+#   ### Call process_files_for_ieas.pl to remove IEAs from the
+#   ### gene_association files Added by AS on Feb 14, 2005
+#   my $self = shift;
+#   print STDERR ("Processing gene_association files to remove IEAs...\n\n");
+#   print STDERR ("Calling process_files_for_ieas.pl:\n");
+#   system ("process_files_for_ieas.pl",
+# 	  $self->data_root . "/gene-associations/");
+#   print STDERR ("Processing gene_association files to remove IEAs complete.\n");
+# }
 
 sub distn {
     my $self = shift;
@@ -120,6 +121,15 @@ sub swissdir {
 	return 'proteomes';
     }
     return $self->{_swissdir};
+}
+
+sub uniprotdir {
+    my $self = shift;
+    $self->{_uniprotdir} = shift if @_;
+    if (!$self->{_uniprotdir}) {
+	return 'uniprot';
+    }
+    return $self->{_uniprotdir};
 }
 
 sub speciesdir {
@@ -197,21 +207,29 @@ sub time_of_last_sp_update {
 sub updatesp {
     my $self = shift;
     my $swissdir = $self->swissdir;
+    my $uniprotdir = $self->uniprotdir || 'uniprot';
 
 # Don't download until we work out details of migrating from swissprot
 # over to uniprot
 
-#    $self->runcmd("wget -r -np -nv ftp://ftp.ebi.ac.uk/pub/databases/SPproteomes/swissprot_files/proteomes/");
-#    if (! -d $swissdir) {
-#	runcmd("mkdir $swissdir");
-#    }
+    my $tempdir = 'temp';
 
-#  Also don't copy files since swissprot files may overwrite manually
-#  downloaded/renamed uniprot files
+    if (-d $tempdir) {
+	$self->runcmd("rm -r $tempdir");
+    }
 
-#    $self->runcmds("cp ftp.ebi.ac.uk/pub/databases/SPproteomes/swissprot_files/proteomes/* $swissdir",
-#		   "chmod -R 777 $swissdir",
-#                   "find $swissdir/ -name '*.gz' -exec gzip -d {} \\;");
+    $self->runcmd("mkdir $tempdir");
+
+# start getting the two big uniprot files.
+
+    if (-d $uniprotdir) {
+	$self->runcmd("rm -r $uniprotdir");
+    }
+
+    $self->runcmd("mkdir $uniprotdir");
+
+    $self->runcmd("wget -r -np -nv -nd -P $uniprotdir ftp://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.dat.gz");
+    $self->runcmd("wget -r -np -nv -nd -P $uniprotdir ftp://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_trembl.dat.gz");
 }
 
 sub update_speciesdir {
@@ -222,7 +240,7 @@ sub update_speciesdir {
     if (! -d $speciesdir) {
 	runcmd("mkdir $speciesdir");
     }
-    $self->runcmd("cd $speciesdir && wget -nv ftp.ncbi.nih.gov/pub/taxonomy/$f && tar -zxvf $f");
+    $self->runcmd("cd $speciesdir && wget --passive-ftp ftp://ftp.ncbi.nih.gov/pub/taxonomy/$f && tar -zxvf $f");
     $self->runcmd("chmod -R 777 $speciesdir");
     return;
 }
@@ -320,7 +338,7 @@ sub makecoderelease {
     $ENV{CVS_RSH} = 'ssh';
 
     for (my $tries = 1; $tries <= MAX_CVS_TRIES; $tries++) {
-        my $err = $self->runcmd("*cvs -d :pserver:anonymous\@cvs.sourceforge.net:/cvsroot/geneontology checkout go-dev");
+        my $err = $self->runcmd("*cvs -d :pserver:anonymous\@geneontology.cvs.sourceforge.net:/cvsroot/geneontology checkout go-dev");
         last unless $err;
     }
 
@@ -331,8 +349,8 @@ sub makecoderelease {
 		   "*find $coderel -name CVS -exec rm -rf {} \\;",
 		   "tar cf $coderel.tar $coderel",
 		   "$GZIP $coderel.tar",
-		   "$sqldir/compiledb -t $dbms $sqldir/go-tables-FULL.sql > $schema",
                    "*sqlt --from MySQL --to HTML $schema > $html && $GZIP $html",
+		   "$sqldir/compiledb -t $dbms $sqldir/go-tables-FULL.sql > $schema",
 		   "$GZIP $schema",
                    # use SQL::Translator to make HTML
 		   );
@@ -769,7 +787,6 @@ sub check_fasta_rfile {
 sub remove_iea {
     my $self = shift;
     my $apph = $self->apph;
-###    $apph->remove_associations(-evcode=>['IEA']);
     $apph->remove_iea;
 }
 
@@ -777,44 +794,52 @@ sub remove_iea {
 sub load_termdb {
     my $self = shift;
     my $data_root = $self->data_root;
-#    $self->load_go('go_ont', "-add_root", "$data_root/ontology/gene_ontology.obo");
-####    $self->load_go('go_ont', "$data_root/ontology/{function,process,component}.ontology");
-    $self->load_go('obo_text', "$data_root/ontology/gene_ontology.obo", "-add_root -fill_path -e load_termdb.err-xml");
-    #$self->load_go('go-defs', "$data_root/ontology/GO.defs");
+    if ($self->use_reasoner) {
+        $self->load_go('obo_text', "$data_root/ontology/gene_ontology_edit.obo", "-add_root -reasoner -e load_termdb.err-xml");
+        $self->run_reasoner();
+    }
+    else {
+        $self->load_go('obo_text', "$data_root/ontology/gene_ontology_edit.obo", "-add_root -fill_path -e load_termdb.err-xml");
+    }
     $self->load_go('go_xref', "$data_root/external2go/*2go", "-e load_xref.err-xml");
+}
+
+sub populate_graph_path {
+    my $self = shift;
+    if ($self->use_reasoner) {
+        $self->run_reasoner();
+    }
+    else {
+        $self->load_go('obo_text', "", " -fill_path");
+    }
 }
 
 sub load_assocdb {
     my $self = shift;
+    my $bulk_load = shift;
     my $extra = shift;
     my $data_root = $self->data_root;
+
+    # stuff needed for bulk load
+    my $sqldir = $self->sqldir;
+    my $mysqlargs = $self->mysqlargs;
+
     # always load from compressed files
     my @files = glob("$data_root/gene-associations/gene_association.*.gz");
+    my $auth = $self->db_auth_string;
 
-#  filtering now happens externally, so this section is no longer needed
-#    # get rid of unwanted files or files containing duplicate data
-#    @files = grep {!filter_dbsrc($_)} @files;
-#    print STDERR "FILTERED FILES: @files\n";
-    $self->load_go('go_assoc', "@files", "-fill_count", $extra, "-e load_assocdb.err-xml");
+    if ($bulk_load eq 'bulk') { # quick hack to ignore flag
+	$self->runcmd ("load-go-assoc-bulk.pl $auth -local-infile 1 -fill_count -e load_assocdb.err-xml $extra @files");
+    } else { 
+	$extra .= " $bulk_load" if $bulk_load; # in case called with 1 arg.
+	$self->load_go('go_assoc', "@files", "-fill_count", $extra, "-e load_assocdb.err-xml");
+    }
 }
 
-sub filter_dbsrc {
-    my $file = shift;
-    # default option is to filter compugen; too many & redundant with SP
-    return 1 if $file =~ /compugen/i;
-    if ($file =~ /goa_(\w+)/i) {
-        # filename may be:  gene_association.goa_xxx.gz
-        # filter all species-specific GOA, and also goa_pdb
-        if (lc($1) eq 'uniprot') {
-            return 0;
-        }
-        else {
-            return 1;
-        }
-    }
-    else {
-        return 0;
-    }
+sub load_xrf_abbs {
+    my $self = shift;
+    my $data_root = $self->data_root;
+    $self->load_go('xrf_abbs', "$data_root/doc/GO.xrf_abbs", "-e load_xrf_abbs.err-xml");
 }
 
 sub load_go {
@@ -823,7 +848,15 @@ sub load_go {
     my $f = shift;
     my $extra = shift || '';
     my $auth = $self->db_auth_string;
+
     $self->runcmd ("load-go-into-db.pl $auth -datatype $dt $extra $f");
+}
+
+sub run_reasoner {
+    my $self = shift;
+    my $auth = $self->db_auth_string;
+    
+    $self->runcmd("go-db-reasoner.pl $auth");
 }
 
 sub check_release_tarballs {
@@ -864,7 +897,7 @@ sub dumpoboxml {
     my $suff = shift || $self->guess_release_type;
     my $data_root = $self->data_root;
     my $f = $self->releasename . '-' .$suff . '.obo-xml';
-    $self->runcmds("go2obo_xml $data_root/ontology/gene_ontology.obo > $f && $GZIP $f");
+    $self->runcmds("go2obo_xml $data_root/ontology/gene_ontology_edit.obo > $f && $GZIP $f");
 }
 
 sub dumpowl {
@@ -872,7 +905,7 @@ sub dumpowl {
     my $suff = shift || $self->guess_release_type;
     my $data_root = $self->data_root;
     my $f = $self->releasename . '-' .$suff . '.owl';
-    $self->runcmds("go2owl $data_root/ontology/gene_ontology.obo > $f && $GZIP $f");
+    $self->runcmds("go2owl $data_root/ontology/gene_ontology_edit.obo > $f && $GZIP $f");
 }
 
 sub dumpseq {
@@ -886,15 +919,30 @@ sub dumpseq {
 
 sub load_seqs {
     my $self = shift;
+    my $bulk_load = shift;
     my $auth = $self->db_auth_string;
     my $data_root = $self->data_root;
     my $swissdir = $self->swissdir || 'proteomes';
+    my $uniprotdir = $self->uniprotdir || 'uniprot';
+    my $suff = shift || $self->guess_release_type;
+    my $distn = $self->releasename . '-' .$suff;
+   
 
+    my $log = "./gp2protein_fail.log";
+    if ($bulk_load eq 'bulk') {
+	# new bulk loading version
+	$self->runcmd("load-sp-bulk.pl $auth -local-infile 1 -log $log -nouni -verbose $data_root/gp2protein/gp2protein.*");
+
+    } else {
 # force uncompress of *.gz files, even if uncompressed file exists
-    $self->runcmd("gunzip -f $data_root/gp2protein/gp2protein.*.gz");
+	$self->runcmd("gunzip -f $data_root/gp2protein/gp2protein.*.gz");
+	my $fasta = $distn."-min.fasta";
+	$self->runcmd("load_sp.pl $auth -nouni -uniprotdir $uniprotdir -out $fasta -log $log -verbose $data_root/gp2protein/gp2protein.*");
+# Added -noncbi flag to save us from NCBI
+#	$self->runcmd("load_sp.pl $auth -nouni -uniprotdir $uniprotdir -out $fasta -log $log -verbose -noncbi $data_root/gp2protein/gp2protein.*");
 
-###    $self->runcmd("load_sp.pl -d $dbname -h $dbhost -swissdir $swissdir -store $data_root/gp2protein/gp2protein.* $data_root/gene-associations/gene_association.goa_*");
-    $self->runcmd("load_sp.pl $auth -swissdir $swissdir -store $data_root/gp2protein/gp2protein.*");
+    }
+
 }
 
 sub load_species {
@@ -903,6 +951,15 @@ sub load_species {
     my $data_root = $self->data_root;
     my $speciesdir = $self->speciesdir || 'ncbi';
     $self->runcmd("load-tax-into-db.pl $auth $speciesdir/names.dmp");
+    $self->runcmd("load-tax-hierarchy-into-db.pl $auth $speciesdir/nodes.dmp");
+}
+
+sub load_refg {
+    my $self = shift;
+    my $auth = $self->db_auth_string;
+    my $data_root = $self->data_root;
+    $self->runcmd("wget -O refg_id_list.txt --passive-ftp ftp://ftp.informatics.jax.org/pub/curatorwork/GODB/refg_id_list.txt");
+    $self->runcmd("load-refg-set-full.pl $auth refg_id_list.txt");
 }
 
 sub db_auth_string {

@@ -1,4 +1,4 @@
-# $Id: AppHandle.pm,v 1.14 2006/12/05 15:28:59 cmungall Exp $
+# $Id: AppHandle.pm,v 1.19 2008/03/12 20:50:55 benhitz Exp $
 #
 # This GO module is maintained by Chris Mungall <cjm@fruitfly.org>
 #
@@ -372,7 +372,7 @@ sub parse_connect_args {
 }
 
 sub switches {
-    qw(dbms schema impl d dbname h dbhost dsn port ior_url ior_file dbiproxy dbi_search_path objcache_on files dbuser u dbauth p dbh dbport dbsocket);
+    qw(dbms schema impl d dbname h dbhost dsn port ior_url ior_file dbiproxy dbi_search_path objcache_on files dbuser u dbauth p dbh dbport dbsocket local-infile);
 }
 
 sub usage {
@@ -686,6 +686,14 @@ See L<GO::Model::Term>
 
 See L<GO::Model::Term>
 
+=head2 get_child_terms
+
+  Usage   - my $term_lref = $apph->get_child_terms($term);
+  Returns -
+  Args    -
+
+See L<GO::Model::Term>
+
 =head2 get_associations
 
   Usage   - $assocs = $apph->get_associations(-term=>{acc=>3677}, 
@@ -757,6 +765,7 @@ See L<GO::Model::Association>
      Or   - $product = $apph->get_product({acc=>"FBgn0002936"});
      Or   - $products = $apph->get_products({speciesdb=>"MGI"});
      Or   - $products = $apph->get_products({taxid=>[7227]});
+     Or   - $products = $apph->get_products({qualifier_taxid=>[7227]});
      Or   - $product = $apph->get_product({term=>3677});
      Or   - $products = $apph->get_products({terms=>[@terms]});
   Returns - GO::Model::GeneProduct
@@ -833,6 +842,10 @@ See L<GO::Model::GeneProduct>
                                       speciesdbs=>["SGD", "MGI", "WormBase"]});
   Usage   - $apph->get_product_count({term=>$term,
                                       taxids=>[7227, 9606]});
+  Usage   - $apph->get_product_count({term=>$term,
+                                      taxids=>[5691], # parasite
+                                      qualifier_taxids=>[9606,9313], # hosts
+                                      });
   Returns - int
   Args    - constraints
 
@@ -840,6 +853,10 @@ gets the count for the number of gene products annotated at BUT NOT
 BELOW this level. if you have set the filters in using the filters()
 method then these filters will be used in determining the count,
 unless they are overridden by consteraints you pass in
+
+term should be a L<GO::Model::Term> object, or a term constraint, for example:
+
+  $apph->get_product_count({term=>{name=>"compound eye morphogenesis"}})
 
 =head2 get_deep_product_count
 
@@ -990,6 +1007,23 @@ see the bioperl docs for the Bio::Species object
 
 (not all attributes are currently filled)
 
+=head2 get_seq
+
+  Usage   - $list = $apph->get_seq({display_id=>"Q9XHP0"})
+  Returns -  GO::Model::Seq
+  Args    -
+
+=head2 get_dbs
+
+  Usage   - $dbs = $apph->get_dbs({name=>"ZFIN"});
+  Returns - arrayref of L<GO::Model::DB>
+  Args    - [optional constraints hashref]
+
+Must have dbs loaded into database; this is typically sourced from
+L<http://www.geneontology.org/doc/GO.xrf_abbs>
+
+Any column from the db table can be used as a constraint
+
 =head2 acc2name_h
 
   Usage   - $n = $apph->acc2name_h->{$go_id}
@@ -1076,6 +1110,8 @@ sub evidence_codes {
   Args    - listref of L<GO::Model::Product> OR listref of product constraint hashes
 
 NOT YET FULLY TESTED
+
+Requires L<GO::TermFinder> (separate CPAN distribution)
 
 Performs a term enrichment analysis. Uses hypergeometric distribution,
 takes entire DAG into account.

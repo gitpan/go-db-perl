@@ -4,17 +4,19 @@ use strict;
 
 use GO::AppHandle;  
 use GO::IO::XML;
+use GO::IO::ObanOwl;
 
 # Get args
 $0 =~ /^(.*\/|)([^\/]*)/;
 my ($progdir, $progname) = ($1, $2);
 
 my $apph = GO::AppHandle->connect(\@ARGV);
-$apph->filters({evcodes=>["!IEA"]});
+## We love IEAs now.
+#$apph->filters({evcodes=>["!IEA"]});
 
 my $user = {person=>'auto'};
 
-my $writer = new GO::IO::XML;
+my $writer = new GO::IO::RDFXML;
 
 my $terms = $apph->get_terms('*', {acc=>1});
 

@@ -69,6 +69,7 @@ sub getapph {
             exit 0;
         }
     }
+    $species_hash = $apph->get_species_hash;
 }
 
 
@@ -92,7 +93,8 @@ sub shell {
     my $node;
     my $nodes;
     my $graph;
-    my $options = {assocs=>0, graphdepth=>2, echo=>0, chatty=>10,
+    #my $gopts = {show_counts=>1};
+    my $options = {assocs=>0, graphdepth=>2, echo=>0, chatty=>10, counts=>0,grouped=>0,
                    gopts=>{}};
     my $term_template = "";
     my $outfh;
@@ -138,9 +140,9 @@ sub shell {
                   # ---------------------------------
                   # FINDING GO TERMS
                   #
-                  # search for term GO:0005045
+                  # search for term GO:0005783
                   # then display the basic details
-                  ^/5045 
+                  ^/5783
                   waitenter
                   # ---------------------------------
                   # SUBGRAPHS
@@ -451,6 +453,13 @@ sub shell {
         print join(", ", @{$apph->filters->{speciesdbs} || []});
     }
 
+    sub taxa {
+        $apph->filters->{taxids} = [@_];
+    }
+    sub showtaxa {
+        print join(", ", @{$apph->filters->{taxids} || []});
+    }
+
     sub shownodelist {
 	foreach my $node (@$nodes) {
 	    shownode($node);
@@ -629,7 +638,7 @@ sub shell {
 	$graph->to_text_output(-fmt=>$fmt || "gotext",
                                -assocs=>$options->{assocs},
                                -fh=>$outfh,
-                               -opts=>$gopts,
+                               -opts=>{%{$gopts || {}},species_hash=>$species_hash,show_counts=>$options->{counts},grouped_by_taxid=>$options->{grouped}},
 			       -suppress=>$suppress);
     }
 

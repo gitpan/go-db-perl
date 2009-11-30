@@ -4,9 +4,12 @@ use GO::Admin;
 use Getopt::Long;
 use strict;
 
+# usage 
+# go-manager.pl -f go-manager.conf
+
 my $pfile = "$ENV{HOME}/.go-manager.conf";
 if (-f "go-manager.conf") {
-#    $pfile = "go-manager.conf";
+    $pfile = "go-manager.conf";
 }
 
 my $dbname;
@@ -238,6 +241,11 @@ sub load_species {
     $admin->load_species;
 }
 
+sub load_refg {
+    checkp();
+    $admin->load_refg;
+}
+
 sub updatesp {
     $admin->updatesp;
 }
@@ -364,6 +372,7 @@ sub menuopts {
        [refresh_data_root   => "Refresh data root (cvs update from src)"],
        [load_seqs  => "Load SP proteomes sequence files"],
        [load_species  => "Load Species from ncbi taxonomy dump"],
+       [load_refg  => "Load reference genomes"],
        [showrel    => "Show released files"],
        [checkrelf  => "Check a released tarball"],
        [loadrelf   => "Load from a released tarball"],

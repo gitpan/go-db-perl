@@ -10,6 +10,8 @@ use Getopt::Long;
 
 my $apph = GO::AppHandle->connect(\@ARGV);
 
+# names.dmp
+# from NCBI Taxonomy ftp
 my $fn = shift @ARGV;
 my %binom = ();
 my %common = ();

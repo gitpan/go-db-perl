@@ -20,3 +20,30 @@
                         fixed subset queries
 
 2006-11-27      - [cjm] GO::AppHandle->get_enriched_term_hash
+
+2006-12-12      - [cjm] added code for loading and querying dbs from GO.xrf_abbs
+
+2006-12-19      - [cjm] fixed warning message
+
+2007-07-05      - [cjm] added constraint {qualifier_taxid}
+
+2007-07-05      - [cjm] added test for association_property loading
+
+2007-08-10      - [cjm] added test for loading of consider/replaced_by tags
+
+2007-08-23      - [cjm] added code for new gene_product_count.species_id column, both populating and querying
+
+2007-08-24      - [cjm] added load-tax-hierarchy-into-db.pl (requires new species table)
+
+2007-09-11      - [cjm] added test for synonym categories
+
+2007-09-27      - [cjm] scripts and methods for loading refG data
+
+2007-10-24      - [cjm] added load_refg to GO::Admin and go-prepare-release.pl
+
+2008-02-04      - [cjm] added load-tax-hierarchy to GO::Admin
+
+2008-04-10      - [cjm] added stub for loading GO.xrf_abbs
+                - [cjm] AppHandleSqlImpl uses sqlin
+
+2008-10-27      - [cjm] intercepts relation_composition xml elements. requires latest schema (2008-10-27)

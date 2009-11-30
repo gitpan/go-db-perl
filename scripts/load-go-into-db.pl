@@ -27,6 +27,7 @@ my $no_clear_cache;
 my $add_root;
 my $ev;
 my $handler_class = 'godb';
+my $reasoner;
 
 my $fmt_arg = "";
 if ($ARGV[0] =~ /^\-format/) {
@@ -86,6 +87,11 @@ while (@files) {
 	$no_fill_path = 1;
 	next;
     }
+    if ($fn =~ /^\-reasoner/) {
+	$no_fill_path = 1;
+	$reasoner = 1;
+	next;
+    }
     if ($fn =~ /^\-no_optimize/) {
 	$no_optimize = 1;
 	next;
@@ -120,8 +126,7 @@ while (@files) {
         next;
     }
     if ($replace) {
-        die "not implemented yet!";
-        #$apph->remove_term_details($fn);
+        $apph->remove_term_details($fn);
     }
 
     # if ANY of the files is an ontology
@@ -267,11 +272,11 @@ __END__
 
 =head1 NAME
 
-load-go.pl
+load-go-into-db.pl
 
 =head1 SYNOPSIS
 
-  load-go.pl -d go -h mydbserver -datatype go_ont *.ontology
+  load-go-into-db.pl -d go -h mydbserver -datatype go_ont *.ontology
 
 =head1 DESCRIPTION
 
@@ -412,7 +417,7 @@ If you also specify the -fill_count option the gene_product_count table will als
 
 You can also specify the -ev command to filter out specific evidence codes; for example
 
-  load-go.pl -d go -h mydbserver -datatype go-ontology *.ontology
+  load-go-into-db.pl -d go -h mydbserver -datatype go-ontology *.ontology
   
 =head2 obo
 

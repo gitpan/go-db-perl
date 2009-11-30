@@ -1,4 +1,4 @@
-# $Id: TestHarness.pm,v 1.7 2005/04/20 00:34:39 cmungall Exp $
+# $Id: TestHarness.pm,v 1.12 2009/05/07 01:43:20 cmungall Exp $
 #
 # This GO module is maintained by Chris Mungall <cjm@fruitfly.org>
 #
@@ -7,7 +7,7 @@
 #
 # You may distribute this module under the same terms as perl itself
 
-#   @(#)$Id: TestHarness.pm,v 1.7 2005/04/20 00:34:39 cmungall Exp $
+#   @(#)$Id: TestHarness.pm,v 1.12 2009/05/07 01:43:20 cmungall Exp $
 #
 #   Test Harness for Gene Ontology modules
 #
@@ -39,6 +39,7 @@ require Exporter;
 	     set_n_tests
 	     get_readonly_apph
 	     getapph
+             get_command_line_connect_args
 	     create_test_database
 	     destroy_test_database
 		);
@@ -101,6 +102,9 @@ sub get_readonly_apph {
     $admin->loadp($CONF);
     my @params = (-dbname=>$admin->dbname,
 		  -dbhost=>$admin->dbhost,
+		  ($admin->dbsocket ? (-dbsocket=>$admin->dbsocket) : ()),
+		  ($admin->dbuser ? (-dbuser=>$admin->dbuser) : ()),
+		  ($admin->dbauth ? (-dbauth=>$admin->dbauth) : ()),
 		 );
     
     require GO::AppHandle;
@@ -113,6 +117,9 @@ sub getapph {
     $admin->dbname($admin->tmpdbname);
     my @params = (-dbname=>$admin->dbname,
 		  -dbhost=>$admin->dbhost,
+		  ($admin->dbsocket ? (-dbsocket=>$admin->dbsocket) : ()),
+		  ($admin->dbuser ? (-dbuser=>$admin->dbuser) : ()),
+		  ($admin->dbauth ? (-dbauth=>$admin->dbauth) : ()),
 		 );
     require GO::AppHandle;
     my $apph;
@@ -126,6 +133,16 @@ sub getapph {
     }
     return $apph;
   }
+
+sub get_command_line_connect_args {
+    $admin->loadp($CONF);
+    $admin->dbname($admin->tmpdbname);
+    return $admin->db_auth_string;
+}
+
+sub populate_graph_path {
+    $admin->populate_graph_path;
+}
 
 our $n_tests = 0;
 my $ok_counter = 0;

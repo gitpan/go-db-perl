@@ -1,4 +1,4 @@
-# $Id: godb.pm,v 1.18 2005/04/30 00:50:13 cmungall Exp $
+# $Id: godb.pm,v 1.21 2008/10/27 21:53:30 cmungall Exp $
 #
 # This GO module is maintained by Chris Mungall <cjm@fruitfly.org>
 #
@@ -172,6 +172,18 @@ sub e_term {
     }
 }
 
+sub e_db {
+    my $self = shift;
+    my @nodes = @_;
+    if ($self->up(1)->name eq 'godb_prestore') {
+        $self->stagdbh->_storenode($_) foreach @nodes;
+        return;
+    }
+    else {
+        return @nodes;
+    }
+}
+
 sub e_term2term {
     my $self = shift;
     my @nodes = @_;
@@ -185,6 +197,30 @@ sub e_term2term {
 }
 
 sub e_typedef {
+    my $self = shift;
+    foreach my $node (@_) {
+        $self->stagdbh->_storenode($node);
+    }
+    return;
+}
+
+sub e_relation_composition {
+    my $self = shift;
+    foreach my $node (@_) {
+        $self->stagdbh->_storenode($node);
+    }
+    return;
+}
+
+sub e_relation_properties {
+    my $self = shift;
+    foreach my $node (@_) {
+        $self->stagdbh->_storenode($node);
+    }
+    return;
+}
+
+sub e_instance {
     my $self = shift;
     foreach my $node (@_) {
         $self->stagdbh->_storenode($node);

@@ -6,6 +6,7 @@ use strict;
 use Getopt::Long;
 use FileHandle;
 use GO::AppHandle;
+use GO::IO::ObanOwl;
 
 $|=1;
 
@@ -24,6 +25,7 @@ GetOptions($opt,
            "id=s@",
            "query|q=s%",
            "denormalized",
+           "writer|w=s",
            "use_property|p=s@",
 	  );
 
@@ -43,6 +45,19 @@ if ($opt->{id}) {
 
 my $gp_h = {};
 my $terms = $apph->get_terms_with_associations($query);
+
+my $writer = $opt->{writer};
+if ($writer) {
+    if ($writer = 'obanowl') {
+        my $io = GO::IO::ObanOwl->new;
+        $io->write_all(-terms=>$terms);
+    }
+    else {
+        die $writer;
+    }
+    exit 0;
+}
+
 foreach my $term (@$terms) {
     my $assocs = $term->association_list;
     foreach my $assoc (@$assocs) {

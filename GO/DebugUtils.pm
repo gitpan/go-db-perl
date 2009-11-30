@@ -1,4 +1,4 @@
-# $Id: DebugUtils.pm,v 1.2 2004/11/24 02:27:56 cmungall Exp $
+# $Id: DebugUtils.pm,v 1.3 2007/09/28 02:57:18 cmungall Exp $
 #
 # This GO module is maintained by Chris Mungall <cjm@fruitfly.org>
 #
@@ -185,7 +185,13 @@ usage:
 sub sqllog {
     my $string = shift;
     if ($ENV{SQL_TRACE}) {
-	print SQLLOGF "SQL:$string\n";
+        if ($ENV{SQL_TRACE_WITH_TIME}) {
+            my $t = time;
+            print SQLLOGF "SQL:$t:$string\n";
+        }
+        else {
+            print SQLLOGF "SQL:$string\n";
+        }
     }
 #    print "<pre>SQL is $string</pre>";
 }

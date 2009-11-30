@@ -25,10 +25,12 @@ my $opt = {
           };
 GetOptions($opt,
 	   "help|h",
-           "input|i=s%",
+           "input|i=s",
+           "term_acc=s",
            "field=s",
            "filter=s%",
            "min_gps=s",
+           "query=s",
            "cutoff=s",
            "speciesdb=s@",
            "evcode|e=s@",
@@ -60,28 +62,63 @@ if ($input) {
 }
 my $field = $opt->{field};
 
-my $eh = $apph->get_enriched_term_hash([ map { {$field=>$_} } @ids]);
+my %exclude_term_by_acc = ();
+my $term_acc = $opt->{term_acc};
+if ($term_acc) {
+    # co-enrichment
+    my $gps =
+      $apph->get_deep_products({term=>{acc=>$term_acc}},{product_only=>1});
+    @ids = map {$_->id} @$gps;
+    $field = 'id';
+    my $g = $apph->get_graph_by_acc($term_acc);
+    my $terms_in_graph = $g->get_all_terms;
+    my $term = $g->get_term($term_acc);
+    $exclude_term_by_acc{$_->acc}=1 foreach @$terms_in_graph;
+    printf "Term: %s \"%s\" num_gps: %d\n",
+      $term_acc, $term->name, scalar(@$gps);
+}
+
+my @constraints = map { {$field=>$_} } @ids;
+if ($opt->{query}) {
+    @constraints = eval $opt->{query};
+}
+my $eh = $apph->get_enriched_term_hash(\@constraints);
 my @erows =
   sort {
       $a->{p_value} <=> $b->{p_value}
   } values %$eh;
+
+if (!@erows) {
+    print STDERR "No enriched terms found.\n";
+    exit 0;
+}
 foreach (@erows) {
     next unless $_->{p_value} <= $opt->{cutoff};
     next if $_->{n_gps_in_sample_annotated} < $opt->{min_gps};
-    
-    printf("%s sample:%d/%d database:%d/%d P-value:%s Corrected:%s \"%s\" Genes: %s\n",
+
+    if ($exclude_term_by_acc{$_->{term}->acc}) {
+        print '*';
+    }
+    printf("%s %s \"%s\" sample:%d/%d database:%d/%d P-value:%s Corrected:%s Genes: %s\n",
            $_->{term}->acc,
+           ont2code($_->{term}->term_type),
+           $_->{term}->name,
            $_->{n_gps_in_sample_annotated},
            $_->{n_gps_in_sample},
            $_->{n_gps_in_database_annotated},
            $_->{n_gps_in_database},
            $_->{p_value},
            $_->{corrected_p_value},
-           $_->{term}->name,
            join('; ',map {sprintf("%s[%s:%s]", $_->symbol, $_->xref->xref_dbname, $_->acc)} @{$_->{gps_in_sample_annotated}}))
 }
 exit 0;
 
+sub ont2code {
+    my $ont = shift;
+    return 'F' if $ont =~ /function/i;
+    return 'P' if $ont =~ /process/i;
+    return 'C' if $ont =~ /component/i;
+}
 
 __END__
 
@@ -175,13 +212,15 @@ multiple args can be passed:
 
   -filter taxid=7227 -filter 'evcode=!IEA'
 
+Only associations which match the filter will be counted
+
 =item -speciesdb SPECIESDB
 
 filter by source database
 
 multiple args can be passed
 
-  -e SGD -e FB
+  -speciesdb SGD -speciesdb FB
 
 =item -evcode [or -e] EVCODE
 
@@ -199,17 +238,72 @@ this opt can be passed multiple times:
 
 p-value report threshold
 
+=item -term_acc GO_ID
+
+if this option is used, the gene product list is created by issuing a (transitive) query on this GO_ID.
+
+For example:
+
+  go-find-enriched-terms.pl -d go -term_acc GO:0006914
+
+This will find terms that are correlated with "autophagy" (indirectly,
+via finding terms enriched in the set of gene products annoated to
+"autophagy")
+
+=item -query PERL
+
+See L<GO::AppHandle>
+
+For example
+
+  -query "{speciesdb=>'FB'}"
+
+This will select all gene products from FlyBase, and look for statistical enrichment of associated terms against the entire database
+
+(may take a while)
+
+The following query will explicitly perform the analysis on Drosophila melanogaster, no matter what the data source:
+
+  -query "{taxid=>7227}"
+
+As you might expect, insect-specific terms are enriched:
+
+  GO:0009993 sample:463/10045 database:468/186759 P-value:0 Corrected:0 "oogenesis (sensu Insecta)" 
+  GO:0007456 sample:332/10045 database:338/186759 P-value:0 Corrected:0 "eye development (sensu Endopterygota)" 
+  GO:0002165 sample:540/10045 database:555/186759 P-value:0 Corrected:0 "larval or pupal development (sensu Insecta)" 
+  GO:0007455 sample:291/10045 database:295/186759 P-value:0 Corrected:0 "eye-antennal disc morphogenesis" 
+  GO:0007560 sample:431/10045 database:440/186759 P-value:0 Corrected:0 "imaginal disc morphogenesis" 
+  GO:0007292 sample:494/10045 database:627/186759 P-value:0 Corrected:0 "female gamete generation" 
+  GO:0007444 sample:512/10045 database:527/186759 P-value:0 Corrected:0 "imaginal disc development" 
+  GO:0048749 sample:278/10045 database:282/186759 P-value:0 Corrected:0 "compound eye development (sensu Endopterygota)" 
+  GO:0048477 sample:484/10045 database:558/186759 P-value:0 Corrected:0 "oogenesis" 
+  GO:0035214 sample:312/10045 database:316/186759 P-value:0 Corrected:0 "eye-antennal disc development" 
+
+A more complex example:
+
+  -query "{evcodes=>['IDA']}" -e '!IEA' -speciesdb FB
+
+this will see if fly genes annotated via direct assay lead to enrichment of terms, considered against a background of all fly genes, excluding IEAs
+
+(will take a long time)
+
 =back
 
 =head1 OUTPUT
 
 The default output produces tab-delimited rows with the following data:
 
-=head2 DOCUMENTATION
+=head1 EXAMPLES
 
-L<http://www.godatabase.org/dev>
+
+YBR009C
+YKR010C
+YGR099W
+YDR224C
 
 =head2 SEE ALSO
+
+L<http://www.godatabase.org/dev>
 
 L<GO::AppHandle>
 

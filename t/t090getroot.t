@@ -19,6 +19,7 @@ my $rels = $apph->get_parent_terms($term);
 stmt_check(!@$rels);
 
 my $terms = $apph->get_ontology_root_terms;
+printf "%s\n",$_->name foreach @$terms;
 stmt_note(scalar(@$terms));
 
 # 3 or 6 (may include obsoletes depending on db version)

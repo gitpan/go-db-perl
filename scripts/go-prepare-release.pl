@@ -22,6 +22,8 @@ my $daily;
 my @skip = ();
 my $noupdatesp;
 my $norefresh;
+my $bulkload;
+my $donothing;
 
 ### Please note that we (The Stanford GO group) have commented 
 ### out all the lines with the variables $nocderel.  
@@ -52,9 +54,13 @@ GetOptions("Date=s"=>\$dateopt,
 	   "skip=s@"=>\@skip,
 	   "noupdatesp"=>\$noupdatesp,
 	   "norefresh"=>\$norefresh,
+	   "bulk"=>\$bulkload,
+	   "donothing"=>\$donothing, # just a hack to test commands+ARGS
 ###	   "nocoderel"=>\$nocoderel,
 	  );
 
+
+$bulkload = 'bulk' if $bulkload;
 
 my $time_started = localtime(time);
 
@@ -67,9 +73,13 @@ if ($load) {
     $admin->loadp($load);
 }
 
+# temporary; can be remove after all production versions of db have gene_product_count.species_id
+$ENV{GO_HAS_COUNT_BY_SPECIES} = 1;
+
 # call the check_environment method to check environmental variables like ??? 
-print "\nCalling check_environment method...\n";
-&check_environment($pfile);
+#print "\nCalling check_environment method...\n";
+#&check_environment($pfile);
+# Don't need this?
 
 # overwrite options
 $admin->dbname($dbname) if $dbname;
@@ -106,9 +116,11 @@ if ($daily) {
 
 my @steps = ($norefresh ? () : ['refresh_data_root', ARG=>$dateopt]);
 
-if ($weekly) {
-    push(@steps, ['pre_process_files_for_ieas']);
-}
+
+#if ($weekly) {
+#    push(@steps, ['pre_process_files_for_ieas']);
+#}
+
 
 push(@steps,
    (
@@ -117,6 +129,7 @@ push(@steps,
    ['newdb'],
    ['load_schema'],
    ['load_termdb', CHECK=>sub{shift->guess_release_type eq 'termdb'}],
+   ['load_xrf_abbs'],    
    ['make_release_tarballs', ARG=>'termdb'],
    ['dumprdfxml', ARG=>'termdb'],
    ['dumpoboxml', ARG=>'termdb'],
@@ -127,15 +140,17 @@ push(@steps,
 unless ($daily) {
     push(@steps,
 	 (
+          ['update_speciesdir'],
  	  ['load_species'],
  	  ($weekly ?
-              (['load_assocdb',
-	       CHECK=>sub{shift->guess_release_type eq 'assocdblite'}]
+              (['load_assocdb', ARG=>$bulkload, # now has IEAs
+	       'CHECK'=>sub{shift->guess_release_type eq 'assocdb'}, ] 
               ) :
-	      (['load_assocdb',
-	      CHECK=>sub{shift->guess_release_type eq 'assocdb'}]
+	      (['load_assocdb', ARG=>$bulkload,
+	      'CHECK'=>sub{shift->guess_release_type eq 'assocdb'},]
               )
           ),
+          ['load_refg'],
 
  	  ['make_release_tarballs', ARG=>'assocdb'], 
  	  
@@ -145,11 +160,11 @@ unless ($daily) {
  	  ($noupdatesp ? () : (['updatesp'])),
 
           ($weekly ?
-              (['load_seqs',
-               CHECK=>sub{shift->guess_release_type eq 'seqdblite'}]
+              (['load_seqs',  # Now has IEAs
+               'CHECK'=>sub{shift->guess_release_type eq 'seqdb'}]
               ) :
-              (['load_seqs',
-              CHECK=>sub{shift->guess_release_type eq 'seqdb'}]
+              (['load_seqs', ARG=>$bulkload,
+              'CHECK'=>sub{shift->guess_release_type eq 'seqdb'}]
               )
           ),
 
@@ -170,8 +185,8 @@ if ($monthly) {
 if ($weekly) {	  	  
  	 push(@steps, 
 	      (
-	       ['make_release_tarballs', ARG=>'seqdblite'],   
-	       ['dumpseq', ARG=>'seqdblite'],   
+	       ['make_release_tarballs', ARG=>'seqdb'],   
+	       ['dumpseq', ARG=>'seqdb'],   
 	       ['dumprdfxml', ARG=>'assocdb']      # XML has no seqs
 	       ));
 }
@@ -209,7 +224,7 @@ foreach my $step (@steps) {
     }
     eval {
 	print "CALLING: $i - $cmd(@args)\n";
-	$admin->$cmd(@args);
+	$admin->$cmd(@args) unless $donothing;
     };
     if ($@) {
 	push(@bad, [$i, $cmd, $@]);
@@ -257,7 +272,7 @@ close(F);
 my @addresses = split(/\,/, $mail);
 foreach (@addresses) {
     if (/\@/) {
-	system("/usr/ucb/mail -s '$emailSubject' $mail < FINAL_REPORT");
+	system("/usr/bin/mailx -s '$emailSubject' $mail < FINAL_REPORT");
     }
 }
 exit(1) if scalar(@bad);
@@ -302,15 +317,15 @@ else {
 
 # also, check if it is owned the same user who launched the program
 # NOTE: write permission isn't enough, since it tries to do a "chmod" on it
-print "Checking for ${swissdir} directory permissions ...\n";
-if(! -o "${swissdir}/") {
-    print "You do not own ${swissdir} directory.\n";
-    print "Please modify the directory file permissions and try again\n";
-    exit;
-}
-else {
-    print "You own ${swissdir} directory.\n";
-}
+#print "Checking for ${swissdir} directory permissions ...\n";
+#if(! -o "${swissdir}/") {
+#    print "You do not own ${swissdir} directory.\n";
+#    print "Please modify the directory file permissions and try again\n";
+#    exit;
+#}
+#else {
+#    print "You own ${swissdir} directory.\n";
+#}
 
 print "\n***Done running check_environment method***\n";
 
@@ -386,7 +401,7 @@ A db containing only the ontology
 
 required files:
 
-  $GO/ontology/*.ontology
+  $GO/ontology/*.obo
   $GO/ontology/GO.defs
   $GO/ontology/external2go/*
 

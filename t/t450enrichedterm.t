@@ -5,7 +5,6 @@
 use lib '.';
 use strict;
 use GO::TestHarness;
-use Set::Scalar;
 
 n_tests(2);
 
@@ -15,8 +14,11 @@ stmt_ok;
 # lets check we got stuff
 
 $apph->filters({speciesdb=>"SGD"});
-my $h = $apph->get_enriched_term_hash([ map { {synonym=>$_} } qw(YNL116W YNL030W) ]);
-#my $h2 = $apph->get_enriched_terms([{symbol=>"Acadm"}]);
+my @test_list = ();
+#my $h = $apph->get_enriched_term_hash([ map { {synonym=>$_} } qw(YNL116W YNL030W) ]);
+push @test_list, @{$apph->get_products({synonym=>"YNL116W"})};
+push @test_list, @{$apph->get_products({synonym=>"YNL030W"})};
+my $h = $apph->get_enriched_term_hash(\@test_list);
 
 $apph->disconnect;
 stmt_ok;

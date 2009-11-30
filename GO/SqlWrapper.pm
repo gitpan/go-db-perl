@@ -1,4 +1,4 @@
-# $Id: SqlWrapper.pm,v 1.2 2004/11/24 02:27:56 cmungall Exp $
+# $Id: SqlWrapper.pm,v 1.9 2008/04/03 17:41:09 sjcarbon Exp $
 #
 # This GO module is maintained by Chris Mungall <cjm@fruitfly.org>
 #
@@ -92,7 +92,38 @@ sub get_autoincrement_val {
     my $table = shift;
     my $dbms = $dbh->{private_dbms};
     if (!$ENV{DBMS} || lc($ENV{DBMS}) eq "mysql") {
-	return $dbh->{mysql_insertid};
+	my $id;
+#	return $dbh->{mysql_insertid};  # don't think this is ever used
+        if (grep {$table eq $_}  # skip linking tables
+            qw(
+               term_dbxref
+               term_synonym
+	       graph_path2term
+	       term_defintion
+	       gene_product_count
+	       seq_dbxref
+	       gene_product_seq
+	       gene_product_synonym
+	       gene_product_property
+	       evidence_dbxref
+              )) {
+            return;
+	}
+        eval {
+            $id = 
+              select_val($dbh,
+                          $table,
+                          undef,
+                          "max(id)"); 
+            if (defined $id) {
+                print STDERR "LAST VAL=$id\n" if $ENV{SQL_TRACE};
+            }
+        };
+        if ($@) {
+            warn("Couldn't get id for $table");
+            return 0;
+        }
+        return $id;
     }
     elsif (lc($dbms) eq "pg") {
         my $id;
@@ -204,17 +235,66 @@ sub sqlin {
     my $fld = shift;
     my @ids = @{shift || []};
     my $qt = shift;
+    my $not = shift || '';
+
+    if ($not) {
+        $not = 'NOT';
+    }
     
     @ids = grep {$_} @ids;
+    my %uidh = map {($_=>1)} @ids;
+    @ids = keys %uidh;
+    if ($ENV{GO_MAX_IDS_IN_SQL_IN_CLAUSE}) {
+        my $num_ids = scalar(@ids);
+        if ($num_ids > $ENV{GO_MAX_IDS_IN_SQL_IN_CLAUSE}) {
+            confess("The SQL query will have $num_ids in the IN clause. This application is configured to have  $ENV{GO_MAX_IDS_IN_SQL_IN_CLAUSE} as maximum. ".
+                    "You can unset or change the value of the environment variable GO_MAX_IDS_IN_SQL_IN_CLAUSE to remove this runtime error");
+        }
+    }
     if (!@ids) {
         @ids = $qt ? ('') : (0);
     }
     if ($qt) {
-        return "$fld in (".join(",",map {sql_quote($_)} @ids).")";
+        return "$fld $not in (".join(",",map {sql_quote($_)} @ids).")";
     }
-    return "$fld in (".join(",",@ids).")";
+    return "$fld $not in (".join(",",@ids).")";
 }
 
+
+=head2 sql_sanity_check
+
+  Usage   - use this to check the sanity of an SQL query
+  Returns - void
+  Args    - sql string
+
+=cut
+sub sql_sanity_check {
+
+  my $sql_string = shift;
+
+  ##
+  if ( $ENV{GO_MAX_TOKENS_IN_SQL_IN_CLAUSE} ){
+
+    my $token_max = int( $ENV{GO_MAX_TOKENS_IN_SQL_IN_CLAUSE} ) || 10000;
+    my $character_trip = $token_max * 10;
+
+    if ( length($sql_string) > $character_trip ) {
+
+      my @tokens = split " ", $sql_string;
+      my $num_tokens = scalar(@tokens);
+
+      if ( $num_tokens > $token_max ){
+
+	confess("This SQL query will have  in the clause. " .
+		"This application is configured to have  " .
+		"$ENV{GO_MAX_TOKENS_IN_SQL_IN_CLAUSE} as maximum. " .
+		"You can unset or change the value of the environment " .
+		"variable GO_MAX_TOKENS_IN_SQL_IN_CLAUSE " .
+		"to remove this runtime error");
+      }
+    }
+  }
+}
 
 
 =head2 sql_quote
@@ -628,10 +708,6 @@ sub get_sql {
 	$select_arr = [$select_arr];
     }
 
-#    my $sql = make_sql_select({select_arr=>$select_arr,
-#			       where_arr=>$where_arr,
-#			       table_arr=>$table_arr,
-#			       order_arr=>$order_arr});
  
     my $sql = "select ";
     if ($distinct) {
@@ -841,7 +917,7 @@ sub update_h  {
 	join(", ", map {"$_=?"} @cols).
 	    " where $where";
     sqllog($sql);    
-    sqllog("   VALS: ".join(", ", @vals));
+    sqllog("   VALS: ".join(", ", map { defined($_) ? $_ : 'NULL' } @vals));
     $sth = $dbh->prepare($sql) || confess($sql."\n\t".$dbh->errstr);
     
     $sth->execute(@vals) || confess($sql."\n\t".$sth->errstr);

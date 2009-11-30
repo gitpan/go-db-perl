@@ -1,4 +1,4 @@
-# $Id: AppHandleSqlImpl.pm,v 1.39 2006/12/05 00:20:08 cmungall Exp $
+# $Id: AppHandleSqlImpl.pm,v 1.95 2009/11/16 23:10:11 sjcarbon Exp $
 #
 # This GO module is maintained by Chris Mungall <cjm@fruitfly.org>
 #
@@ -43,12 +43,24 @@ use GO::Model::Association;
 use GO::Model::GeneProduct;
 use GO::Model::Relationship;
 use GO::Model::Graph;
+use GO::Reasoner;
 use Exporter;
 use base qw(GO::AppHandles::AppHandleAbstractSqlImpl);
 use vars qw($AUTOLOAD $PATH $GPPROPERTY);
 
 $PATH="graph_path";
 $GPPROPERTY="gene_product_property";
+
+our $GO_HAS_COUNT_BY_SPECIES = defined($ENV{GO_HAS_COUNT_BY_SPECIES}) ? $ENV{GO_HAS_COUNT_BY_SPECIES} : 1;
+
+sub get_autoincrement {
+
+    my $self = shift;
+    my $table = shift;
+
+    return get_autoincrement_val($self->dbh,$table);
+
+}
 
 sub refresh {
     my $self = shift;
@@ -92,18 +104,18 @@ sub timestamp {
 }
 
 
+##
 sub generate_goid {
-    my $self = shift;
-    my $dbh = $self->dbh;
-    my ($user) =
-      rearrange([qw(term user)], @_);
+  my $self = shift;
+  my $dbh = $self->dbh;
+  my ($user) =
+    rearrange([qw(term user)], @_);
 
-    my $acch = 
-	select_hash($dbh,
-		    "term",
-		    [],
-		    "max(acc) AS m");
-    return (int($acch->{'m'} || "0") +1);
+  my $acch = select_hash($dbh,
+			 "term",
+			 [],
+			 "max(acc) AS m");
+  return (int($acch->{'m'} || "0") +1);
 }
 
 sub add_term {
@@ -114,12 +126,12 @@ sub add_term {
     if (!ref($termh)) {
 	$termh = {name=>$termh};
     }
-#    if (!$termh->{acc}) {
-#	$termh->{acc} = $self->generate_goid ($user);
-#    }
-    my $term = 
-      $self->create_term_obj($termh);
-    my $h = select_hash($dbh, "term", "acc=".$term->acc);
+    my $term = $termh;
+    if (ref($term) eq 'HASH') {
+        $term = 
+          $self->create_term_obj($termh);
+    }
+    my $h = select_hash($dbh, "term", "acc=".sql_quote($term->acc));
     my $id;
     my $update_h =
     {name=>$term->name,
@@ -235,6 +247,16 @@ sub add_dbxref {
     my $update = shift;
     my $dbh = $self->dbh;
 
+    if (!ref($xref)) {
+        if ($xref=~/(\w+):(.*)/) {
+            $xref = $self->create_xref_obj({xref_dbname=>$1,
+                                            xref_key=>$2});
+        }
+        else {
+            $self->throw("Cannot parse xref: $xref");
+        }
+    }
+
     my $h = 
       select_hash($dbh,
                   "dbxref",
@@ -263,7 +285,7 @@ sub add_dbxref {
                    $updateh,
                   );
     }
-    $xref->id ($id);
+    $xref->id($id);
     $xref;
 }
 
@@ -398,98 +420,6 @@ sub add_association {
     $assoc;
 }
 
-sub OLD_add_association {
-    my $self = shift;
-    my $dbh = $self->dbh;
-    my ($assoch, $user) =
-      rearrange([qw(association user)], @_);
-
-    my $gene_acc = $assoch->{acc};
-
-    my $term = $self->create_term_obj();
-    $term->public_acc($assoch->{goacc});
-    $term = $self->get_term({acc=>$term->acc}, {id=>'y'});
-    if (!$term) {
-	confess("There is no term with go_id/acc $assoch->{goacc}\n");
-    }
-    my $assoc_hash = $term->association_hash;
-    my $assoc;
-    my $product;
-    my $evidence;
-
-    if ($assoc_hash->{$gene_acc}) {
-	$assoc = $assoc_hash->{$gene_acc};
-	$product = $assoc->gene_product;
-	print "already have association ".$assoc->{id}.
-	      " from ".$term->name." to ".
-	       $product->symbol."\n";
-    }
-    else {
-	# add_product actually does a select first
-	# and only adds it if it isn't already there
-	$product = $self->add_product(
-					  {symbol=>$assoch->{symbol},
-					   acc=>$assoch->{acc},
-					   full_name=>$assoch->{full_name},
-					   synonym_list=>$assoch->{synonym_list},
-					   speciesdb=>$assoch->{speciesdb}});
-	
-	$assoc = $self->create_association_obj({});
-	$assoc->gene_product($product);
-	print "adding gene ".$product->symbol." id=".$product->id."\n";
-	my $ah = {gene_product_id=>$product->id,
-		  term_id=>$term->id};
-	$ah->{is_not} = $assoc->is_not if (defined($assoc->is_not));
-
-	my $id = insert_h($dbh, "association", $ah);
-	$assoc->id($id);
-    }
-    # this adds it to the model, but not yet to the db
-    $evidence = GO::Model::Evidence->new({code=>$assoch->{ev_code},
-					  seq_acc=>$assoch->{seq_acc},
-					  reference=>$assoch->{reference},
-				      });
-    $assoc->add_evidence ($evidence);
-
-    my $xref_id = 0;
-    my $h =
-	select_hash($dbh,
-		    "dbxref",
-		    ["xref_key=".
-		     sql_quote($evidence->xref->xref_key || ""),
-		     "xref_dbname=".
-		     sql_quote($evidence->xref->xref_dbname)]);
-    $xref_id = $h->{id};
-    if (!$xref_id) {
-	$xref_id =
-	    insert_h($dbh,
-		     "dbxref",
-		     {xref_key=>$evidence->xref->xref_key || "",
-		      xref_dbname=>$evidence->xref->xref_dbname});
-	print "Adding dbxref to ".$evidence->xref->xref_dbname.
-	    ":".$evidence->xref->xref_key."\n";
-    }
-    $evidence->xref->id($xref_id);
-    my $ev_select_l = ["association_id=".$assoc->id,
-		       "code=".sql_quote($assoch->{ev_code}),
-		       "dbxref_id=".$xref_id];
-    my $ev_h = {};
-    $ev_h->{code} = $evidence->code;
-    $ev_h->{seq_acc} = $evidence->seq_acc if ($evidence->seq_acc);
-    $ev_h->{association_id} = $assoc->id;
-    $ev_h->{dbxref_id} = $evidence->xref->id;
-
-    my $ev_id;
-    $h = select_hash($dbh, "evidence", $ev_select_l);
-    $evidence->id($h->{id});
-    if (!$evidence->id) {
-	my $ev_id = insert_h($dbh, "evidence", $ev_h);
-	$evidence->id($ev_id);
-	print "Adding evidence ".$evidence->code."\n";
-    }
-    return $assoc;
-}
-
 sub add_evidence {
     my $self = shift;
     my $dbh = $self->dbh;
@@ -565,8 +495,6 @@ sub add_definition {
 
     return 1;
 }
-
-
 
 sub add_product {
     my $self = shift;
@@ -695,7 +623,6 @@ sub remove_associations_by_speciesdb {
                "id in (".join(", ", @seqids).")") if @seqids;
     sql_delete($dbh,
                "gene_product_count");
-    
 }
 
 sub remove_associations {
@@ -741,7 +668,7 @@ sub remove_associations_partial {
 		     -where=>\@q,
 		     -columns=>"a.id",
 		     -limit=>$LIMIT);
-    printf STDERR "GOT:%d\n", scalar(@$asids);
+    #printf STDERR "GOT:%d\n", scalar(@$asids);
 #    if ($max) {
 #	@aids = splice(@aids, 0, $max);
 #    }
@@ -782,11 +709,16 @@ sub remove_associations_partial {
     sql_delete($dbh,
                "seq",
                sqlin("id", $sids));
-    unless (!$speciesdb && $evcodes && scalar(@$evcodes) == 1 &&
-	    $evcodes->[0] eq 'IEA') {
-	sql_delete($dbh,
-		   "gene_product_count");
-    }
+
+    ## COMMENTARY: Seems to be preventing counts when IEAs are
+    ## around. No longer necessary.
+    #     unless( ! $speciesdb &&
+    # 	    $evcodes &&
+    # 	    scalar(@$evcodes) == 1 &&
+    # 	    $evcodes->[0] eq 'IEA' ){
+    #       sql_delete($dbh, "gene_product_count");
+    #     }
+
     return scalar(@$asids);
 }
 
@@ -973,7 +905,6 @@ sub store_species {
     }
 }
 
-
 #
 sub _delete_term {
     my $self = shift;
@@ -1004,8 +935,99 @@ sub _delete_term {
 	       "id=".$term->{id});
 }
 
+# experimental
+sub add_product_to_subset {
+    my $self = shift;
+    my $gp = shift;
+    my $subset_name = shift;
+    if (!ref($gp)) {
+        $gp = $self->get_product({acc=>$gp});
+    }
+    if (!$gp) {
+        warn("no such gp");
+        return 0;
+    }
+    my $subset = $subset_name;
+    if (!ref($subset)) {
+        $subset = $self->get_term({acc=>$subset_name});
+    }
+    if (!$subset) {
+        $subset = $self->create_term_obj({acc=>$subset_name,
+                                          name=>$subset_name});
+        $subset->type('subset');
+        $self->add_term($subset);
+    }
+    my $gp_id = $gp->id;
+    my $subset_id = $subset->id;
+    my $dbh = $self->dbh;
+    sql_delete($dbh,
+               "gene_product_subset",
+               "gene_product_id=$gp_id AND subset_id=$subset_id");
+    insert_h($dbh,
+             "gene_product_subset",
+             {gene_product_id=>$gp_id,
+              subset_id=>$subset_id});
+    return 1;
+}
+
+# experimental
+sub add_homolset {
+    my $self = shift;
+    my $acc = shift;
+    my $symbol = shift;
+    my $product_accs = shift;
+    my $dbh = $self->dbh;
+
+    my $xref = $self->add_dbxref($acc);
+
+    my $xref_id=$xref->id;
+    #sql_delete($dbh,"homolset","symbol='$acc'");
+    sql_delete($dbh,"homolset","dbxref_id=$xref_id");
+    my $homolset_id = 
+      insert_h($dbh,
+               "homolset",
+               {symbol=>$symbol,
+                dbxref_id=>$xref_id});
+    my $ok = 1;
+    foreach my $gp (@$product_accs) {
+        my $gp_acc = $gp;
+        # inconsistent styles...
+        if (!ref($gp)) {
+            $gp = $self->get_product({acc=>$gp_acc});
+            if (!$gp && $gp_acc =~ /^\w+:(.*)/) {
+                $gp = $self->get_product({acc=>$1});
+            }
+        }
+        if (!$gp) {
+            warn("no such gp: $gp_acc");
+            $ok=0;
+            next;
+        }
+        my $gp_id = $gp->id;
+        my $dbh = $self->dbh;
+        sql_delete($dbh,
+                   "gene_product_homolset",
+                   "gene_product_id=$gp_id AND homolset_id=$homolset_id");
+        # TODO: evidence, etc
+        insert_h($dbh,
+                 "gene_product_homolset",
+                 {gene_product_id=>$gp_id,
+                  homolset_id=>$homolset_id});
+    }
+    return $ok;
+}
+
+sub new_add_root {
+    my $self = shift;
+    $self->get_root_terms();  # automatically caches if not pre-set
+    return;
+}
+
 sub add_root {
     my $self = shift;
+    if ($ENV{GO_NEW_ADD_ROOT}) {
+        return $self->new_add_root(@_);
+    }
     my $rname = shift || 'all';
     my $term_type = shift || 'universal';
     my $dbh = $self->dbh;
@@ -1074,108 +1096,700 @@ sub add_root {
     return;
 }
 
-# in-progress...
+
+=item get_enriched_term_hash
+
+Args: sample_prods (GP aref) and optional background_prods (GP aref)
+Returns: enrichment hash array
+   {
+       term=>$term,
+       n_gps_in_sample=>$n_gps_in_sample,
+       n_gps_in_sample_annotated=>$x,
+       gps_in_sample_annotated=>$sample_gps_by_term_id{$term_id},
+       gps=>$gp_array,
+       n_gps_in_background=>$n_gps_in_background,
+       n_gps_in_background_annotated=>$M,
+       p_value=>$pvalue
+   }
+
+=cut
+## If an explicit background set is not given, we will use everything
+## in the ontology. An offshoot of this is that the database filter
+## will effectively become a way of creating a background set.
 sub get_enriched_term_hash {
-    my $self = shift;
-    my $dbh = $self->dbh;    
-    my $prodqs = shift;
-    my @prods=();
-    require "GO/TermFinder/Native.pm";
 
-    my %product_by_id = ();
-    foreach (@$prodqs) {
-        my $ps;
-        if (ref($_) && ref($_) =~ /GeneProduct/) {
-            $ps = [$_];
-        }
-        else {
-            $ps = $self->get_products($_);
-        }
-        push(@prods, @$ps);
-        $product_by_id{$_->id} = $_
-          foreach @$ps;
-    }
-    my $n_gps_in_sample = scalar(@prods);
+  require "GO/TermFinder/Native.pm";
 
-    my %gp_count_by_term_id = ();
-    my %products_by_term_id = ();
-    foreach my $p (@prods) {
-        my $terms = $self->get_terms({product=>$p,is_not=>0});
-        my @term_ids = map {$_->id} @$terms;
-        my $hl =
-          select_hashlist($dbh,
-                          "graph_path",
-                          sqlin("term2_id",\@term_ids),
-                          "DISTINCT term1_id AS term_id");
-        foreach (@$hl) {
-            my $term_id = $_->{term_id};
-            $gp_count_by_term_id{$term_id}++;
-            push(@{$products_by_term_id{$term_id}},
-                 $product_by_id{$p->id}); 
-        }
-    }
-    my $n_gps_in_database = $self->get_product_count;
+  my $self = shift; # apph
+  my $sample_prods = shift || []; # gene product sample set
+  my $background_prods = shift || []; # gene product background set
 
-    my $gp_frac = $n_gps_in_sample/$n_gps_in_database;
+  my $dbh = $self->dbh; # database handle
 
-    my $distribution_calculator = GO::TermFinder::Native::Distributions->new($n_gps_in_database);
+  ## If nothing is incoming, just use the whole ontology.
+  my $use_all = 0;
+  $use_all = 1 if ! $background_prods || ! @$background_prods;
 
-    my %totalh = ();
-    my %stats_by_term_acc = ();
-    my $correction_factor = 0;
-    foreach my $term_id (keys %gp_count_by_term_id) {
-        my $term = $self->get_term({id=>$term_id});
-        my $total =
-          $self->get_deep_product_count({term=>$term,is_not=>0});
-        $totalh{$term_id} = $total;
+  ##
+  ## Process incoming background gene products (if any).
+  ##
 
-	# and increment the correction factor if that node has more
-	# than 1 annotation in the background
-        $correction_factor++ if $total > 1;
+  my @background_prods = ();
+  my %background_gp_by_id = (); # hash of GO gps indexed by id.
+  my %background_gp_count_by_term_id = ();
+  my %background_gps_by_term_id = ();
+  my $n_gps_in_background = -1;
+  if( $use_all ) {
 
-        my $prop = $total/$n_gps_in_database;
-        my $expected = $prop * $n_gps_in_sample;
+    ## Get # gps in db. For error, either database has no gene
+    ## products or a filter that filters everything has been
+    ## used.
+    #$n_gps_in_background = $self->get_product_count; # BUG?
+    $n_gps_in_background = $self->get_deep_product_count;
+    return {} if ! $n_gps_in_background;
 
-        # code lifted from GO::TermFinder
+  }else{
 
-        my $M = $total;              # $self->__totalNumAnnotationsToGoId($goid);
-        my $x = $gp_count_by_term_id{$term_id};   # $self->__numAnnotationsToGoId($goid);
-        my $N = $n_gps_in_database;
-        my $n = $n_gps_in_sample;
-        my $pvalue = $distribution_calculator->pValueByHypergeometric($x, $n, $M, $N);
+    ## Union the background and the sample.
+    my @unioned_background_set = ();
+    push @unioned_background_set, @$background_prods;
+    push @unioned_background_set, @$sample_prods;
 
-        $stats_by_term_acc{$term->acc} =
-          {
-           term=>$term,
-           n_gps_in_sample=>$n_gps_in_sample,
-           n_gps_in_database=>$n_gps_in_database,
-           n_gps_in_sample_annotated=>$x,
-           n_gps_in_database_annotated=>$M,
-           gps_in_sample_annotated=>$products_by_term_id{$term_id},
-           p_value=>$pvalue
-          };
-    }
-    if ($correction_factor < 1) {
-        die "assertion error: correction_factor < 1";
+    ## Get a proper list of the incoming background products (which,
+    ## frankly, we should already have, but I don't know who's using
+    ## this so I'm not removing it).
+    #foreach (@$background_prods){
+    foreach (@unioned_background_set){
+      my $ps;
+      if( ref($_) && ref($_) =~ /GeneProduct/ ){
+	$ps = [$_];
+      }else{
+	$ps = $self->get_products($_);
+      }
+      ## Only add it if we haven't seen it.
+      if( ! $background_gp_by_id{$_->id} ){
+	push @background_prods, @$ps;
+	$background_gp_by_id{$_->id} = $_ foreach @$ps;
+      }
     }
 
-    # bonferroni correction
-    foreach my $term_acc (keys %stats_by_term_acc) {
-        my $hyp = 
-          $stats_by_term_acc{$term_acc};
-        $hyp->{corrected_p_value} = $correction_factor * $hyp->{p_value};
+    ## Get # gps in db. For error, either database has no gene
+    ## products or a filter that filters everything has been
+    ## used.
+    $n_gps_in_background = scalar(@background_prods);
+
+    return {} if ! $n_gps_in_background;
+
+    ## For every incoming background product...
+    foreach my $p (@background_prods) {
+
+      my $terms = $self->get_terms({product=>$p,is_not=>0});
+      my @term_ids = map {$_->id} @$terms;
+      ## ...get the ancestors of the associated terms and...
+      my $hl =
+	select_hashlist($dbh,
+			"graph_path",
+			sqlin("term2_id",\@term_ids),
+			"DISTINCT term1_id AS term_id");
+      ## ...increment the hits to all ancestors and hash the product.
+      foreach (@$hl) {
+	my $term_id = $_->{term_id};
+	$background_gp_count_by_term_id{$term_id}++;
+	push(@{$background_gps_by_term_id{$term_id}},
+	     $background_gp_by_id{$p->id});
+      }
+    }
+  }
+
+  ##
+  ## Process sample gene products.
+  ##
+
+  ## Get a proper list of the incoming sample products (which, frankly, we
+  ## should already have, but I don't know who's using this so I'm not
+  ## removing it).
+  my @sample_prods = (); # list of GO gps.
+  my %sample_gp_by_id = (); # hash of GO gps indexed by id.
+  my $n_gps_in_sample = -1; #
+  foreach (@$sample_prods){
+    my $ps;
+    if( ref($_) && ref($_) =~ /GeneProduct/ ){
+      $ps = [$_];
+    }else{
+      $ps = $self->get_products($_);
     }
 
-    return \%stats_by_term_acc;
-    
+    ## Only add if the gene product is in the background or we are
+    ## using all of the ontology. Of course, this shouldn't be a
+    ## problem since we've unioned the sample and background.
+    if( $use_all || $background_gp_by_id{$_->id} ){
+      ## Only add it if we haven't seen it.
+      if( ! $sample_gp_by_id{$_->id} ){
+       push @sample_prods, @$ps;
+       $sample_gp_by_id{$_->id} = $_ foreach @$ps;
+      }
+    }
+  }
+  $n_gps_in_sample = scalar(@sample_prods);
+
+  ## For every (remaining, see above) incoming sample product...
+  my %sample_gp_count_by_term_id = ();
+  my %sample_gps_by_term_id = ();
+  foreach my $p (@sample_prods) {
+
+    my $terms = $self->get_terms({product=>$p,is_not=>0});
+    my @term_ids = map {$_->id} @$terms;
+    ## ...get the ancestors of the associated terms and...
+    my $hl =
+      select_hashlist($dbh,
+		      "graph_path",
+		      sqlin("term2_id",\@term_ids),
+		      "DISTINCT term1_id AS term_id");
+    ## ...increment the hits to all ancestors and hash the product.
+    foreach (@$hl) {
+      my $term_id = $_->{term_id};
+      $sample_gp_count_by_term_id{$term_id}++;
+      push(@{$sample_gps_by_term_id{$term_id}}, $sample_gp_by_id{$p->id});
+    }
+  }
+
+  ##
+  ## Calculate.
+  ##
+
+  ##
+  my $distribution_calculator =
+    GO::TermFinder::Native::Distributions->new($n_gps_in_background);
+  my %stats_by_term_acc = ();
+  my $correction_factor = 0;
+  foreach my $term_id (keys %sample_gp_count_by_term_id) {
+
+    my $total = -1;
+    my $term = $self->get_term({id=>$term_id});
+    if( $use_all ){
+      #$total = $self->get_deep_product_count({term=>$term});
+      $total = $self->get_deep_product_count({term=>$term, is_not=>0});
+    }else{
+      $total = $background_gp_count_by_term_id{$term_id};
+    }
+
+    # and increment the correction factor if that node has more
+    # than 1 annotation in the background
+    $correction_factor++ if $total > 1;
+
+    ##
+    my $x = $sample_gp_count_by_term_id{$term_id};
+    my $n = $n_gps_in_sample;
+    my $M = $total;
+    my $N = $n_gps_in_background;
+
+    #print STDERR "+++start:( $term_id ) [" . $term->acc . '] ' .
+    #  "\$x:$x, " .
+    #	"\$n:$n, " .
+    #	  "\$M:$M, " .
+    #	    "\$N:$N" .
+    #	      " ... ";
+
+    my $pvalue =
+      $distribution_calculator->pValueByHypergeometric($x, $n, $M, $N);
+
+    ## Assemble the names of the gene products for returning.
+    my $gp_array = [];
+    foreach my $gp ( @{$sample_gps_by_term_id{$term_id}} ){
+
+      #print STDERR '_0_' . $sample_gps_by_term_id{$term_id} . "\n";
+      #print STDERR '_1_' . $gp . "\n";
+      #print STDERR '_2_' . $gp->acc . "\n";
+      #sleep 1;
+
+      if( $gp ){
+	my $gp_hash = {
+		       ACC => 'n/a',
+		       SYMBOL => 'n/a',
+		       FULL_NAME => 'n/a',
+		       SPECIESDB => 'n/a',
+		      };
+	$gp_hash->{ACC} = sprintf("%s", $gp->acc) if $gp->acc;
+	$gp_hash->{SYMBOL} = sprintf("%s", $gp->symbol) if $gp->symbol;
+	$gp_hash->{FULL_NAME} = sprintf("%s", $gp->full_name) if $gp->full_name;
+	$gp_hash->{SPECIESDB} = sprintf("%s", $gp->speciesdb) if $gp->speciesdb;
+
+	push @$gp_array, $gp_hash;
+      }
+    }
+
+    $stats_by_term_acc{$term->acc} =
+      {
+       term=>$term,
+       n_gps_in_sample=>$n_gps_in_sample,
+       n_gps_in_sample_annotated=>$x,
+       gps_in_sample_annotated=>$sample_gps_by_term_id{$term_id},
+       gps=>$gp_array,
+       n_gps_in_background=>$n_gps_in_background,
+       n_gps_in_background_annotated=>$M,
+       p_value=>$pvalue
+      };
+  }
+
+  # bonferroni correction
+  foreach my $term_acc (keys %stats_by_term_acc) {
+    my $hyp = 
+      $stats_by_term_acc{$term_acc};
+    $hyp->{corrected_p_value} = $correction_factor * $hyp->{p_value};
+  }
+
+  return \%stats_by_term_acc;
 }
+
+
+#select DISTINCT dbxref.xref_dbname, dbxref.xref_key, gene_product.symbol, term.acc, parent.acc AS parent_acc from dbxref, gene_product, association, term, graph_path, term AS parent where dbxref.id = gene_product.dbxref_id and gene_product.id = association.gene_product_id and association.term_id = term.id and term.id = graph_path.term2_id and graph_path.term1_id = parent.id and dbxref.xref_key IN ('S000001777', 'S000005221') and association.is_not = 0
+=item term_anc_bypass
+
+Arg: dbh, list of gp accs, iea usage flag (defaults to 0)
+Returns: a hashref containing data on the ancestors of terms 
+         associated with the gps.
+
+more information by examining the associated SQL
+
+=cut
+sub term_anc_bypass {
+
+  my $dbh = shift;
+  my $background_prods = shift;
+  my $iea_p = shift || 0; # whether we should use ieas
+
+  ## For every incoming background product...
+  my @prod_acc_list = ();
+  my $tick = "\'";
+  foreach my $p (@$background_prods) {
+    my $acc = $p->acc;
+    push @prod_acc_list, $tick . $acc . $tick;
+  }
+
+  ## construct pseudo-query.
+  my $tables =
+    ["dbxref",
+     "gene_product",
+     "association",
+     "term",
+     "graph_path",
+     "term AS ancestor"];
+  my $wheres =
+    ["dbxref.id = gene_product.dbxref_id",
+     "gene_product.id = association.gene_product_id",
+     "association.term_id = term.id",
+     "term.id = graph_path.term2_id",
+     "graph_path.term1_id = ancestor.id",
+     "dbxref.xref_key IN (". join(', ', @prod_acc_list) .")",
+     #"dbxref.xref_key IN ('S000001777', 'S000005221')", # DEBUG
+     "association.is_not = 0"];
+  my $res_heads =
+    ["DISTINCT dbxref.xref_dbname",
+     "dbxref.xref_key",
+     "gene_product.id AS gp_id",
+     "gene_product.symbol",
+     "term.acc",
+     "term.id",
+     "ancestor.id AS ancestor_id",
+     "ancestor.acc AS ancestor_acc"];
+
+  ## Add parts to filter out IEAs if they are not wanted.
+  if( defined $iea_p && ! $iea_p ){
+    push @$tables,
+      'evidence';
+    push @$wheres,
+      'association.id = evidence.association_id';
+    push @$wheres,
+      "evidence.code != 'IEA'";
+  }
+
+  my $tl =
+    select_hashlist($dbh,
+		    $tables,
+		    $wheres,
+		    $res_heads);
+  return $tl;
+}
+
+
+=item fast_get_enriched_term_hash
+
+Args: sample_prods (GP aref)
+      background_prods (GP aref) (may be optionally empty)
+      speciesdb arrayref
+      iea use flag (defaults to 0)
+Returns: enrichment hash array
+   {
+       term=>$term,
+       n_gps_in_sample=>$n_gps_in_sample,
+       n_gps_in_sample_annotated=>$k,
+       gps_in_sample_annotated=>$sample_gps_by_term_id{$term_id},
+       gps=>$gp_array,
+       n_gps_in_background=>$n_gps_in_background,
+       n_gps_in_background_annotated=>$M,
+       p_value=>$pvalue
+   }
+
+NOTE: Experimental version built for speed.
+WARNING: Check these optimizations against future DB changes.
+
+=cut
+## If an explicit background set is not given, we will use everything
+## in the ontology. An offshoot of this is that the database filter
+## will effectively become a way of creating a background set.
+sub fast_get_enriched_term_hash {
+
+  require "GO/TermFinder/Native.pm";
+
+  #require AmiGO;
+  #my $core = AmiGO->new();
+  #$core->kvetch('_start:_fast_get_enriched_term_hash_');
+
+  my $self = shift; # apph
+  my $sample_prods = shift || []; # gene product sample set
+  my $background_prods = shift || []; # gene product background set
+  my $incoming_species = shift || []; # the species that we can use.
+  my $iea_p = shift; # whether we should use ieas
+
+  ## Since it's a boolean coming in, sanity check.
+  if( ! defined $iea_p ){
+    $iea_p = 1;
+  }
+
+  ## Database handle should already have species filter set. TODO:
+  ## just pull this from self.
+  my $dbh = $self->dbh; # database handle
+
+  ###
+  ### Set defaults for species, use_all
+  ###
+
+  ## We want to make sure that the default is defined--we'll be using
+  ## it later as a filter. TODO: this should just be pulled out of the
+  ## apphande above and we should remove the species list from the
+  ## argument (I guess it's there to be backwards complatible).
+  my %species = ();
+  foreach (@$incoming_species) {
+    $species{$_} = 1;
+  }
+
+  ## If no background is incoming, just use the whole ontology.
+  my $use_all = 0;
+  $use_all = 1 if ! $background_prods || ! scalar(@$background_prods);
+
+  #$core->kvetch('_fgeth_: $use_all: ' . $use_all);
+
+  ###
+  ### Given that we have an incoming background list, get the
+  ### associated gene products.
+  ###
+
+  ##
+  ## Process incoming background gene products (if any).
+  ##
+
+  my @complete_background_prods = ();
+  my %background_gp_by_id = (); # hash of GO gps indexed by id.
+  my %background_gp_count_by_term_id = ();
+  my %background_gps_by_term_id = ();
+  my $n_gps_in_background = undef;
+  if( $use_all ) {
+
+    ## Get # gps in db. For error, either database has no gene
+    ## products or a filter that filters everything has been
+    ## used.
+    ## BUG: this needs an IEA filter on it to work with not IEAs in
+    ## the filtering case, but that is not support right now so that
+    ## case is prevented further up the pipe.
+    $n_gps_in_background = $self->get_deep_product_count;
+    return {} if ! $n_gps_in_background;
+
+    #$core->kvetch('_fgeth_: $n_gps_in_background (a): '.$n_gps_in_background);
+
+  }else{
+
+    ## Union the background and the sample.
+    my @unioned_background_set = ();
+    push @unioned_background_set, @$background_prods;
+    push @unioned_background_set, @$sample_prods;
+
+    ## Get a proper list of the incoming background products (which,
+    ## frankly, we should already have, but I don't know who's using
+    ## this so I'm not removing it).
+    #foreach (@$background_prods){
+    foreach (@unioned_background_set){
+      my $ps;
+      if( ref($_) && ref($_) =~ /GeneProduct/ ){
+	$ps = [$_];
+      }else{
+	$ps = $self->get_products($_);
+      }
+      ## Only add it if we haven't seen it.
+      if( ! $background_gp_by_id{$_->id} ){
+	push @complete_background_prods, @$ps;
+	$background_gp_by_id{$_->id} = $_ foreach @$ps;
+	#print STDERR "_bg_prod_id_:" . $_->id . "\n";
+      }
+    }
+
+    #$core->kvetch('_fgeth_: mark (a)');
+
+    ## Get # gps in db. For error, either database has no gene
+    ## products or a filter that filters everything has been
+    ## used.
+    $n_gps_in_background = scalar(@complete_background_prods);
+
+    #$core->kvetch('_fgeth_: mark (b)');
+
+    return {} if ! $n_gps_in_background;
+
+    #$core->kvetch('_fgeth_: $n_gps_in_background (b): '.$n_gps_in_background);
+
+    ## This segment is a bypass for older looping below.
+    my $tl = term_anc_bypass($dbh, \@complete_background_prods, $iea_p);
+    my %cache_hash = ();
+    foreach my $item (@$tl) {
+
+      my $dbname = $item->{xref_dbname};
+      my $term_id = $item->{id};
+      my $ancestor_id = $item->{ancestor_id};
+      my $gp_id = $item->{gp_id};
+
+      if( scalar(keys %species) == 0 ||
+	  defined($species{$dbname}) ){
+
+	$cache_hash{$gp_id} = {} if ! defined $cache_hash{$gp_id};
+	$cache_hash{$gp_id}{$ancestor_id} = 1;
+      }
+    }
+    ## Count and add to another cache.
+    foreach my $gkey (keys %cache_hash) {
+      foreach my $akey (keys %{$cache_hash{$gkey}}){
+	$background_gp_count_by_term_id{$akey}++;
+	push(@{$background_gps_by_term_id{$akey}},
+	     $background_gp_by_id{$gkey});
+      }
+    }
+  }
+
+  ###
+  ### Process sample gene products.
+  ###
+
+  ## Get a proper list of the incoming sample products (which, frankly, we
+  ## should already have, but I don't know who's using this so I'm not
+  ## removing it).
+  my @sample_prods = (); # list of GO gps.
+  my %sample_gp_by_id = (); # hash of GO gps indexed by id.
+  my $n_gps_in_sample = -1; #
+  foreach (@$sample_prods){
+    my $ps;
+    if( ref($_) && ref($_) =~ /GeneProduct/ ){
+      #$core->kvetch('_fgeth_: mark (d)');
+      $ps = [$_];
+    }else{
+      #$core->kvetch('_fgeth_: mark (e)');
+      $ps = $self->get_products($_);
+    }
+    #$core->kvetch('_fgeth_: mark (f)');
+
+    ## Only add if the gene product is in the background or we are
+    ## using all of the ontology. Of course, this shouldn't be a
+    ## problem since we've unioned the sample and background.
+    if( $use_all || $background_gp_by_id{$_->id} ){
+      ## Only add it if we haven't seen it.
+      if( ! $sample_gp_by_id{$_->id} ){
+       push @sample_prods, @$ps;
+       $sample_gp_by_id{$_->id} = $_ foreach @$ps;
+      }
+    }
+  }
+  $n_gps_in_sample = scalar(@sample_prods);
+
+  #$core->kvetch('_fgeth_: $n_gps_in_sample: ' . $n_gps_in_sample);
+
+  ## For every (remaining, see above) incoming sample product...
+  my %sample_gp_count_by_term_id = ();
+  my %sample_gps_by_term_id = ();
+
+  ## This segment is a bypass for older looping below.
+  my $tl = term_anc_bypass($dbh, \@sample_prods, $iea_p);
+  my %cache_hash = ();
+  foreach my $item (@$tl) {
+
+    my $dbname = $item->{xref_dbname};
+    my $term_id = $item->{id};
+    my $ancestor_id = $item->{ancestor_id};
+    my $gp_id = $item->{gp_id};
+
+    if( scalar(keys %species) == 0 ||
+	defined($species{$dbname}) ){
+
+      $cache_hash{$gp_id} = {} if ! defined $cache_hash{$gp_id};
+      $cache_hash{$gp_id}{$ancestor_id} = 1;
+    }
+  }
+  ##
+  foreach my $gkey (keys %cache_hash) {
+    foreach my $akey (keys %{$cache_hash{$gkey}}){
+      $sample_gp_count_by_term_id{$akey}++;
+      push(@{$sample_gps_by_term_id{$akey}},
+	   $sample_gp_by_id{$gkey});
+    }
+  }
+
+  #$core->kvetch('_fgeth_: mark (h)');
+
+  ###
+  ### Calculate.
+  ###
+
+  ##
+  my $distribution_calculator =
+    GO::TermFinder::Native::Distributions->new($n_gps_in_background);
+
+  #$core->kvetch('_fgeth_: mark (i)');
+  #$core->kvetch('_fgeth_: mark (i:count):' .
+  #		scalar(keys %sample_gp_count_by_term_id));
+
+  my %stats_by_term_acc = ();
+  my $correction_factor = 0;
+  foreach my $term_id (keys %sample_gp_count_by_term_id) {
+
+    #$core->kvetch('_fgeth_: mark (j:1)');
+
+    my $total = -1;
+    my $term = $self->get_term({id=>$term_id});
+    if( $use_all ){
+      ## Again, the filter-as-db case would only work if we could use
+      ## an IEA flag here, but it's not and the database doesn't
+      ## support it yet.
+      #$core->kvetch('_fgeth_: mark (j:2)');
+      $total = $self->get_deep_product_count({term=>$term, is_not=>0});
+    }else{
+      #$core->kvetch('_fgeth_: mark (j:3)');
+      $total = $background_gp_count_by_term_id{$term_id};
+    }
+
+    # And increment the correction factor if that node has more
+    # than 1 annotation in the background.
+    $correction_factor++ if $total > 1;
+
+    #$core->kvetch('_fgeth_: mark (j:8)');
+
+    ##
+    my $k = $sample_gp_count_by_term_id{$term_id};
+    my $n = $n_gps_in_sample;
+    my $M = $total;
+    my $N = $n_gps_in_background;
+
+    my $term_acc = $term->acc;
+
+    #     $core->kvetch('_fgeth_: mark (j:9): ' . $term_acc);
+    #     $core->kvetch('_fgeth_: mark (j:9k): ' . $k);
+    #     $core->kvetch('_fgeth_: mark (j:9n): ' . $n);
+    #     $core->kvetch('_fgeth_: mark (j:9M): ' . $M);
+    #     $core->kvetch('_fgeth_: mark (j:9N): ' . $N);
+
+    ## Try for p-value. Even though it's mathematically valid, results
+    ## might be confusing.
+    my $pvalue = undef;
+    if( $k >= $n - ($N - $M) &&
+	$k <= $n && $k <= $M ){
+      $pvalue = $distribution_calculator->pValueByHypergeometric($k,$n,$M,$N);
+    }
+    ## P-value sanity check.
+    if( ! defined $pvalue ){
+      die "Possibly due to a bug in the system, this term enrichment has reached an undefined state (with k=".$k.", n=".$n.", M=".$M.", N=".$N."). Please report this message, as well as your inputs, to the GO Helpdesk. Our apologies for the inconvenience";
+    }elsif( $pvalue < 0.0 ){
+      die "Possibly due to a rounding error in the system (e.g. " . $pvalue . ", with k=".$k.", n=".$n.", M=".$M.", N=".$N."), this term enrichment has generated an impossible probability. Please report this message, as well as your inputs, to the GO Helpdesk. Our apologies for the inconvenience";
+    }elsif( $pvalue > 1.0){
+      ## Making the impossible possible because of logs and floats.
+      $pvalue = 1.0;
+    }
+
+    #$core->kvetch('_fgeth_: mark (j:10)');
+
+    ## Assemble the names of the gene products for returning.
+    my $gp_array = [];
+    foreach my $gp ( @{$sample_gps_by_term_id{$term_id}} ){
+
+      #print STDERR '_0_' . $sample_gps_by_term_id{$term_id} . "\n";
+      #print STDERR '_1_' . $gp . "\n";
+      #print STDERR '_2_' . $gp->acc . "\n";
+      #sleep 1;
+
+      if( $gp ){
+	my $gp_hash = {
+		       ACC => 'n/a',
+		       SYMBOL => 'n/a',
+		       FULL_NAME => 'n/a',
+		       SPECIESDB => 'n/a',
+		      };
+	$gp_hash->{ACC} = sprintf("%s", $gp->acc) if $gp->acc;
+	$gp_hash->{SYMBOL} = sprintf("%s", $gp->symbol) if $gp->symbol;
+	$gp_hash->{FULL_NAME} = sprintf("%s", $gp->full_name) if $gp->full_name;
+	$gp_hash->{SPECIESDB} = sprintf("%s", $gp->speciesdb) if $gp->speciesdb;
+
+	push @$gp_array, $gp_hash;
+      }
+    }
+
+    #$core->kvetch('_fgeth_: mark (k)');
+    #$core->kvetch('_fgeth_: mark (k1:acc): ' . $term_acc);
+
+    $stats_by_term_acc{$term_acc} =
+      {
+       term => $term,
+       n_gps_in_sample => $n_gps_in_sample,
+       n_gps_in_sample_annotated => $k,
+       gps_in_sample_annotated => $sample_gps_by_term_id{$term_id},
+       gps => $gp_array,
+       n_gps_in_background => $n_gps_in_background,
+       n_gps_in_background_annotated => $M,
+       p_value => $pvalue,
+      };
+
+    #$core->kvetch('_fgeth_: mark (l)');
+  }
+
+  #$core->kvetch('_fgeth_: mark (m)');
+
+  # bonferroni correction
+  foreach my $term_acc (keys %stats_by_term_acc) {
+    my $hyp = 
+      $stats_by_term_acc{$term_acc};
+    $hyp->{corrected_p_value} = $correction_factor * $hyp->{p_value};
+  }
+
+  #$core->kvetch('_end:_fast_get_enriched_term_hash_');
+
+  return \%stats_by_term_acc;
+}
+
+
+##
 
 sub fill_path_table {
     my $self = shift;
+    my $reasoner = GO::Reasoner->new;
+    $reasoner->dbh($self->dbh);
+    $reasoner->run;
+    $self->has_path_table(1);
+    return;
+}
+
+sub old_fill_path_table {
+    my $self = shift;
     my $dbh = $self->dbh;
     sql_delete($dbh, "$PATH");
-    my $root = $self->get_root_term(-template=>{id=>'y'});
+    my $roots = $self->get_root_terms(-template=>{id=>'y'});
+    if (@$roots != 1) {
+        $self->throw("Expected 1 root. Got: @$roots");
+    }
+    my $root = $roots->[0];
     my $graph = 
+#      $self->get_graph(-acc=>[map {$_->acc} @$roots],
       $self->get_graph(-acc=>$root->acc,
                        -depth=>-1,
                        -template=>{terms=>{id=>'y', acc=>'y'}});
@@ -1201,7 +1815,6 @@ sub fill_path_table {
     }
     $self->has_path_table(1);
 }
-
 
 sub has_word_table {
     my $self = shift;
@@ -1341,64 +1954,119 @@ sub fill_count_table {
 
     my $dbh = $self->dbh;
 
+    ## BUG: in some cases, the filters seem to be set badly. Force
+    ## them to a known (and likely useful) setting.
+    my $orig_evcodes = [];
+    my $orig_speciesdb = [];
+    if( defined $self->filters ){
+      if( defined $self->filters->{evcodes} ){
+	$orig_evcodes = $self->filters->{evcodes};
+      }
+      if( defined $self->filters->{speciesdb} ){
+	$orig_evcodes = $self->filters->{speciesdb};
+      }
+    }
+    $self->filters({evcodes=>[],speciesdb=>[]});
+
     # if an argument is passed, this is used as the
     # list of evcode combinations to use.
     # if there is no argument, only one combination,
     # the current filter, is used
     if (!defined($evcodes)) {
+      #print STDERR "___" . 'evcodes not defined' . "\n";
         $evcodes = [$self->filters->{evcodes}];
     }
+    #print STDERR "_f_" . $self->filters->{evcodes} . "\n";
+    #print STDERR "_s_" . scalar(@$evcodes) . "\n";
+    #$evcodes = ['EXP', 'IC', 'IDA', 'IEA', 'IEP', 'IGC', 'IGI', 'IMP', 'IPI', 'ISA', 'ISM', 'ISO', 'ISS', 'NAS' ,'ND', 'NR', 'RCA', 'TAS'];
 
-    my $oldcodes = $self->filters->{evcodes};
-    my $oldspdb = $self->filters->{speciesdb};
+    ##
+    #my $oldcodes = $self->filters->{evcodes};
+    #my $oldspdb = $self->filters->{speciesdb};
 
     if (@$evcodes > 1) {
-        confess("For now you can only populate gpc with one evcode combination");
+      confess("For now you can only populate gpc with one evcode combination");
     }
 
-    sql_delete($dbh, 
-               "gene_product_count");
-    # we only fill the count table for non IEAs and for all evcodes
+    sql_delete($dbh, "gene_product_count");
+
+    ## We only fill the count table for non IEAs and for all evcodes.
+    ## COMMENTARY: Besides the statement above, there appears to be no
+    ## open reference in this section about IEAs, so maybe it's
+    ## refering to a property inherited from another piece if
+    ## code. Trying to leave as-is.
     foreach my $ev (@$evcodes) {
-        
-        my $evstr = $ev;
+
+      #print STDERR "__loop ev_" . $ev . "_\n";
+
+        my $evstr = $ev || undef;
         if (ref($ev)) {
             $evstr = join(";", sort @{$ev || []});
         }
-#        sql_delete($dbh, 
-#                   "gene_product_count",
-#                   $evstr ? "code=".sql_quote($evstr) : "code is null");
-        my $spdbh = $self->get_speciesdb_dict;
+
         my $r = $self->get_root_term(-template=>{id=>'y', acc=>'y'});
         my $g = $self->get_graph_by_terms([$r], -1, {terms=>{id=>'y'}});
         my $nodes = $g->get_all_nodes;
-        foreach my $spdb (keys %$spdbh) {
-            if ($ev) {
-                $self->filters->{evcodes} = $ev;
-            }
-            else {
-                delete $self->filters->{evcodes};
-            }
-            $self->filters->{speciesdbs}=$spdb;
-            #        my $countl =
-            #          $self->get_product_count({per_term=>1, terms=>[]});
-            #        our @deep = ();
-            #        our @nprods = ();
-        
-            #        map {
-            #            $nprods[$_->{term_id}] = $_->{"c"};
-            #        } @$countl;
-            #        sub rcount {
-            #            my $node = shift;
-            #            my $children = $g->get_child_terms($node->acc);
-            #            my $sum = 0;
-            #            map {$sum += rcount($_)} @$children;
-            #            $sum += $nprods[$node->id];
-            #            $deep[$node->id] = $sum;
-            #            return $sum;
-            #        }
 
-            #        rcount($r);
+        if ($ev) {
+            $self->filters->{evcodes} = $ev;
+        }
+
+        if ($GO_HAS_COUNT_BY_SPECIES) {
+
+	  #print STDERR "_by spec_" . '' . "\n";
+
+            my $sql =
+              "SELECT p.species_id,count(distinct p.id)
+           FROM association AS a, graph_path AS g, evidence AS e, gene_product AS p
+           WHERE is_not=0 AND p.id = a.gene_product_id AND e.association_id=a.id AND a.term_id=g.term2_id AND g.term1_id=?";
+            if( $ev && scalar(@$ev) ){
+                my @extra = ();
+                if (!ref($ev)) {
+                    $ev=[$ev];
+                }
+                foreach (@$ev) {
+                    if ($_ =~ /\!(\w+)/) {
+                        push(@extra, "e.code != '$1'");
+                    } else {
+                        push(@extra, "e.code = '$_'");
+                    }
+                }
+                $sql.= " AND (".join(' OR ',@extra).")";
+            }
+            $sql.= " GROUP BY p.species_id";
+	    #print STDERR "sql: $sql\n";
+            my $sth = $dbh->prepare($sql);
+            # pre-compute by species
+            foreach my $n (@$nodes) {
+	      #printf STDERR "\texecuting for %s %s\n", $n->id, $n->acc;
+	      $sth->execute($n->id);
+	      my $spcs = $sth->fetchall_arrayref();
+	      foreach (@$spcs) {
+		insert_h($dbh,
+			 "gene_product_count",
+			 {term_id=>$n->id,
+			  product_count=>($_->[1] || 0),
+			  species_id=>$_->[0],
+			  code=>$evstr});
+	      }
+            }
+	  }
+
+        my $spdbh = $self->get_speciesdb_dict;
+        # pre-computed by speciesdb (eg GOA, FlyBase, DictyBase,...)
+        foreach my $spdb (keys %$spdbh) {
+
+	    #print STDERR "_specdb_ " . $spdb;
+
+            if($ev){
+	      $self->filters->{evcodes} = $ev;
+            }else{
+	      delete $self->filters->{evcodes};
+	    }
+	    #print STDERR " _filter_" . $self->filters->{evcodes} . "\n";
+
+            $self->filters->{speciesdb}=$spdb;
             my $nodes = $g->get_all_nodes;
             foreach my $n (@$nodes) {
                 my $pc =
@@ -1410,19 +2078,21 @@ sub fill_count_table {
                 insert_h($dbh,
                          "gene_product_count",
                          {term_id=>$n->id,
-                          #########                      product_count=>$deep[$n->id],
                           product_count=>($pc || 0),
                           speciesdbname=>$spdb,
                           code=>$evstr});
             }
+
         }
     }
 
     # restore settings
-    $self->filters->{evcodes} = $oldcodes;
-    $self->filters->{speciesdb} = $oldspdb;
+    #$self->filters->{evcodes} = $oldcodes;
+    #$self->filters->{speciesdb} = $oldspdb;
     $self->has_count_table(1);
 
+    ## BUG: restore from above bug.
+    $self->filters({evcodes=>$orig_evcodes,speciesdb=>$orig_speciesdb});
 }
 
 #empty reltype filter: all reltypes
@@ -1451,6 +2121,7 @@ sub _get_dyna_computed_product_count {
             $done_node_h{$t->id} = 1;
         }
     } else {
+        # no relationship type filter  - we can do a fast query
         $total = $self->get_products(-constraints=>$inconstr, -options=>$options);
     }
     return $total;
@@ -1610,6 +2281,137 @@ sub acc2name_h {
     return $self->{_acc2name_h};
 }
 
+sub dbxref2id_h {
+    my $self = shift;
+    if (@_) {
+        $self->{_dbxref2id_h} = shift;
+    }
+    if (!$self->{_dbxref2id_h}) {
+	my $max = 1;
+        my $hl = 
+          select_hashlist($self->dbh,
+                          "dbxref",
+                          [],
+                          "xref_dbname, xref_key,id");
+        my $d2i = {};
+        foreach (@$hl) {
+            $d2i->{uc($_->{xref_dbname})}->{uc($_->{xref_key})}= $_->{id};
+	    $max = $_->{id} if $_->{id} > $max;
+	}
+        $d2i->{max} = $max;
+        $self->{_dbxref2id_h} = $d2i;
+    }
+    return $self->{_dbxref2id_h};
+    
+}
+
+sub dbxref2gpid_h {
+    my $self = shift;
+    if (@_) {
+        $self->{_dbxref2gpid_h} = shift;
+    }
+    if (!$self->{_dbxref2gpid_h}) {
+        my $hl = 
+          select_hashlist($self->dbh,
+                          ["dbxref","gene_product"],
+                          ["dbxref.id = gene_product.dbxref_id"],
+                          ["xref_dbname, xref_key, gene_product.id"]);
+        my $d2i = {};
+        foreach (@$hl) {
+            $d2i->{uc($_->{xref_dbname})}->{uc($_->{xref_key})}= $_->{'gene_product.id'};
+	}
+        $self->{_dbxref2gpid_h} = $d2i;
+    }
+    return $self->{_dbxref2gpid_h};
+    
+}
+
+sub acc2id_h {
+    my $self = shift;
+    if (@_) {
+        $self->{_acc2id_h} = shift;
+    }
+    if (!$self->{_acc2id_h}) {
+        my $hl = 
+          select_hashlist($self->dbh,
+                          "term",
+                          [],
+                          "acc,id");
+        my $a2i = {};
+        foreach (@$hl) {
+            $a2i->{$_->{acc}} = $_->{id};
+        }
+        $self->{_acc2id_h} = $a2i;
+    }
+    return $self->{_acc2id_h};
+}
+
+sub source2id_h {
+    my $self = shift;
+    if (@_) {
+        $self->{_source2id_h} = shift;
+    }
+    if (!$self->{_source2id_h}) {
+        my $hl = 
+          select_hashlist($self->dbh,
+                          "db",
+                          [],
+                          "name,id");
+        my $s2i = {};
+        foreach (@$hl) {
+            $s2i->{uc($_->{name})} = $_->{id};
+        }
+        $self->{_source2id_h} = $s2i;
+    }
+    return $self->{_source2id_h};
+}
+
+sub taxon2id_h {
+    my $self = shift;
+    if (@_) {
+        $self->{_taxon2id_h} = shift;
+    }
+    if (!$self->{_taxon2id_h}) {
+        my $hl = 
+          select_hashlist($self->dbh,
+                          "species",
+                          [],
+                          "ncbi_taxa_id, id");
+        my $n2i = {};
+        foreach (@$hl) {
+            $n2i->{$_->{ncbi_taxa_id}} = $_->{id};
+        }
+        $self->{_taxon2id_h} = $n2i;
+    }
+    return $self->{_taxon2id_h};
+}
+
+sub dbxref2gp_h {
+    my $self = shift;
+    if (@_) {
+        $self->{_dbxref2gp_h} = shift;
+    }
+    if (!$self->{_dbxref2gp_h}) {
+	my @tables_arr = ("gene_product", "dbxref");
+	my @constr_arr = ("gene_product.dbxref_id = dbxref.id");
+	my @cols = ("dbxref.xref_key", "dbxref.xref_dbname", "gene_product.symbol");
+	my $hl = 
+              select_hashlist(-dbh=>$self->dbh,
+                              -tables=>\@tables_arr,
+                              -where=>\@constr_arr,
+                              -columns=>\@cols);
+
+        my $d2i = {};
+        foreach (@$hl) {
+	    #enforce case
+	    my $dbname = uc($_->{xref_dbname});
+            $d2i->{uc($_->{xref_key})}->{$dbname} = $_->{symbol};
+	}
+        $self->{_dbxref2gp_h} = $d2i;
+    }
+    return $self->{_dbxref2gp_h};
+    
+}
 
 sub get_term {
     my $self = shift;
@@ -1620,7 +2422,6 @@ sub get_term {
 #    }
     return $terms->[0];   # returns undef if empty
 }
-
 
 # only returns terms that have associations attached
 sub get_terms_with_associations {
@@ -1657,6 +2458,24 @@ sub get_terms_with_associations {
 }
 
 
+## Attempt to access damaged filters (hack to try and work around
+## other recent recent hacks to get IEAs working...).
+sub _try_filter {
+  my $self = shift;
+  my $key = shift || die "died trying--need an arguement: $!";
+
+  my $retval = undef;
+
+  ## Try and safely get the data out.
+  if( defined $self->filters ){
+    if( defined $self->filters->{$key} ){
+      $retval = $self->filters->{$key};
+    }
+  }
+
+  return $retval;
+}
+
 
 sub get_terms {
     my $self = shift;
@@ -1666,8 +2485,7 @@ sub get_terms {
     $template = GO::Model::Term->get_template($template);
     my $constr = pset2hash($inconstr);
     my @where_arr = ();
-   my @table_arr = ("term");
-
+    my @table_arr = ("term");
 
     my $fetch_all = 0;
 
@@ -1677,6 +2495,9 @@ sub get_terms {
     if ($constr && !ref($constr)) {
         if ($constr =~ /^\d+$/) {
             $constr = {"acc"=>int($constr)};
+        }
+        elsif ($constr =~ /\w+:\d+$/) {
+            $constr = {"acc"=>$constr};
         }
         elsif ($constr eq "*") {
             $constr = {};
@@ -1932,12 +2753,27 @@ sub get_terms {
         }
 
 	if ($constr->{synonym}) {
-	    push(@table_arr, "term_synonym");
-	    push(@where_arr,
-		 "term.id=term_synonym.term_id",
-		 "term_synonym.term_synonym = ".
-		 sql_quote($constr->{synonym}));
-	    delete $constr->{synonym};
+		$constr->{synonyms} = $constr->{synonym};
+		delete $constr->{synonym};
+	}
+
+	if ($constr->{synonyms}) {
+		my $syns = $constr->{synonyms};
+		# allow either single synonym or a list
+		if (!ref($syns)) {
+			$syns = [$syns];
+		}
+		push(@table_arr, "term_synonym");
+		push(@where_arr,
+		"term.id=term_synonym.term_id",
+		"(".
+			join(" OR ",
+				map {
+					"term_synonym.term_synonym like ".
+						sql_quote($_)
+				} @$syns).
+			")");
+		delete $constr->{synonyms};
 	}
 
 	if ($constr->{subset}) {
@@ -2056,8 +2892,16 @@ sub get_terms {
 	    my $use_dbxref_table = 0;
 	    my $use_tax_table = 0;
 
-            my $constr_sp = $constr->{speciesdb} || $self->filters->{speciesdb};
-            my $constr_taxid = $constr->{taxid} || $self->filters->{taxid};
+	    ## COMMENTARY: The whole filter thing seems to be broken,
+	    ## try another way...
+#             my $constr_sp = $constr->{speciesdb}
+# 	      || ($self->filters && $self->filters->{speciesdb});
+#             my $constr_taxid = $constr->{taxid}
+# 	      || ($self->filters && $self->filters->{taxid});
+            my $constr_sp = $constr->{speciesdb}
+	      || $self->_try_filter("speciesdb");
+            my $constr_taxid = $constr->{taxid}
+	      || $self->_try_filter("taxid");
 
             if ($constr_sp) {
                 if (!ref($constr_sp)) {
@@ -2102,7 +2946,14 @@ sub get_terms {
             }
             
             #evidence
-            my $constr_ev = $constr->{evcodes} || $self->filters->{evcodes};
+	    ## Filtering problems may show-up here too, trying to head
+	    ## them off a the pass with _try_filter...
+#             my $constr_ev = $constr->{evcodes} || $self->filters->{evcodes}
+#                          || $constr->{evcode} || $self->filters->{evcode};
+            my $constr_ev = $constr->{evcodes}
+	      || $self->_try_filter("evcodes")
+		|| $constr->{evcode}
+		  || $self->_try_filter("evcode");
             if ($constr_ev) {
                 # hmm we have some redundant code here;
                 # doing the same kind of thing as get_products
@@ -2130,6 +2981,7 @@ sub get_terms {
                          "(".join(", ", map {sql_quote($_)} @no).")");
                 }
                 delete $constr->{evcodes};
+                delete $constr->{evcode};
                 #constrain by evidence dbxrefs (only support id for now)
                 #reasoning: get terms in association for certain evidence
                 #e.g. evidence from one experiment
@@ -2267,6 +3119,7 @@ sub get_terms {
                  "association.term_id",
                  "association.gene_product_id",
                  "association.is_not",
+                 "association.assocdate",
                  "association.role_group",
                  "association.source_db_id",
                  "gp_dbxref.xref_key gp_xref_key",
@@ -2528,16 +3381,20 @@ sub get_root_terms {
     my $roots =
       $self->get_terms(-constraints=>{is_root=>1},
                        -template=>$template);
-    if (!$roots) {
+    if (!$roots || !@$roots) {
         my $hl =
           select_hashlist($dbh,
                           "term LEFT OUTER JOIN term2term ON (term.id=term2term.term2_id)",
-                          undef,
-                          "term.acc, term2term.term1_id");
+                          ["term2term.term1_id IS NULL","term.is_obsolete=0"],
+                          "term.acc, term.id");
         my @accs = ();
         foreach (@$hl) {
-            push(@accs, $_->{acc}) unless $_->{term1_id};
+            push(@accs, $_->{acc});
         }
+        update_h($dbh,
+                 "term",
+                 {is_root=>1},
+                 sqlin("id", [map {$_->{id}} @$hl]));
         $roots = $self->get_terms(-constraints=>{acc=>[@accs]},
                                   -template=>$template);
     }
@@ -2546,13 +3403,13 @@ sub get_root_terms {
 
 sub get_root_term {
     my $self = shift;
-    my $roots = $self->get_root_terms;
+    my $roots = $self->get_root_terms(@_);
     if (@$roots == 0) {
         confess("no root term!");
     }
     elsif (@$roots > 1) {
-        printf STDERR "%s\n", $_->name foreach @$roots;
-        confess("multiple root terms!");
+      #printf STDERR "%s\n", $_->name foreach @$roots;
+      confess("multiple root terms!");
     }
     else {
         return $roots->[0];
@@ -2566,8 +3423,32 @@ sub get_ontology_root_terms {
     # yuck, ugly way to do this,
     # but mysql has no subselects
     # so this is the easiest way for now
-    my $root = $self->get_root_term(-template=>{acc=>1});
-    return $self->get_child_terms($root, @_);
+    #my $root = $self->get_root_term(@_);
+    #return $self->get_child_terms($root, @_);
+    my $roots = $self->get_root_terms();
+    if (@$roots ==1 && $roots->[0]->acc eq 'all') {
+        return $self->get_child_terms($roots->[0], @_);
+    }
+    return $roots;
+}
+
+sub get_db {
+    my $dbs = shift->get_dbs(@_);
+    return $dbs->[0];
+}
+
+sub get_dbs {
+    my $self = shift;
+    my $dbh = $self->dbh;
+    my ($inconstr) =
+      rearrange([qw(constraints)], @_);
+    my $constr = pset2hash($inconstr);
+    my $hl = 
+      select_hashlist($dbh,
+                      "db",
+                      $constr);
+    my @dbs = map {$self->create_db_obj($_)} @$hl;
+    return \@dbs;
 }
 
 sub get_association_count {
@@ -2650,6 +3531,7 @@ sub get_associations {
        "association.term_id",
        "association.gene_product_id ",
        "association.is_not",
+       "association.assocdate",
        "association.role_group",
        "association.source_db_id",
        "dbxref.xref_key",
@@ -2729,6 +3611,38 @@ sub get_associations {
 	}
     }
 
+    # Secondary NCBI Taxa IDs
+    # for multi-species interactions
+    my $qualifier_taxids = 
+      $constr->{qualifier_taxid} ||
+        $constr->{qualifier_taxids} ||
+          $filters->{qualifier_taxid} ||
+            $filters->{qualifier_taxids};
+
+    if ($qualifier_taxids) {
+        if (!ref($qualifier_taxids)) {
+            $qualifier_taxids = [$qualifier_taxids];
+        }
+
+	push(@tables, "species AS qualifier_species");
+	push(@tables, "association_species_qualifier");
+	push(@where, "qualifier_species.id = association_species_qualifier.species_id");
+	push(@where, "association_species_qualifier.association_id = association.id");
+
+	my @wanted = grep {$_ !~ /^\!/} @$qualifier_taxids;
+	my @unwanted = grep {/^\!/} @$qualifier_taxids;
+
+	if (@wanted) {
+	    push(@where,
+		 "(".join(" OR ", 
+			  map{"qualifier_species.ncbi_taxa_id=$_"} @wanted).")");
+	}
+	if (@unwanted) {
+	    push(@where,
+		 map{"qualifier_species.ncbi_taxa_id!=$_"} @unwanted);
+	}
+    }
+
     if ($constr->{acc}) {
         push(@where,
              "dbxref.xref_acc = ".sql_quote($constr->{acc}));
@@ -2739,7 +3653,7 @@ sub get_associations {
     }
 
 
-    my $evcodes = $constr->{evcodes} || $filters->{evcodes};
+    my $evcodes = $constr->{evcodes} || $filters->{evcodes} || $constr->{evcode} || $filters->{evcode};
     my @w=();
     if ($evcodes) {
 # often $evcodes points to an empty ARRAY
@@ -2902,7 +3816,8 @@ sub create_assocs_from_hashlist {
 
     # filter based on evidence if requested
     my $filters = $self->filters || {};
-    my $evcodes = $constr->{evcodes} || $filters->{evcodes};
+    my $evcodes = $constr->{evcodes} || $filters->{evcodes}
+               || $constr->{evcode} || $filters->{evcode};
     my @w=();
     if ($evcodes) {
 # often $evcodes points to an empty ARRAY
@@ -3138,7 +4053,6 @@ sub get_graph {
     $self->get_node_graph(@_);
 }
 
-
 sub extend_graph {
     my $self = shift;
 
@@ -3154,7 +4068,6 @@ sub extend_graph {
     $graph->merge($g2);
 }
 
-
 sub get_graph_below {
     my $self = shift;
     my ($acc, $max_depth, $template, $termh) =
@@ -3162,9 +4075,8 @@ sub get_graph_below {
     my %t = %{$self->graph_template($template) || {}};
     $t{traverse_down} = 1;
     $t{traverse_up} = 0;
-    $self->get_graph($acc, $max_depth, \%t, $termh);
+    $self->get_node_graph($acc, $max_depth, \%t, $termh);
 }
-
 
 sub get_graph_above {
     my $self = shift;
@@ -3203,7 +4115,7 @@ sub get_graph_DPSC {
     push @all_terms, @{$termh->{open_terms} || []};
     #add seeded term so its children are shown and theirs if expanded
     push @all_terms, @$term;
-printf STDERR "all t num: %d\n",scalar(@all_terms);
+    #printf STDERR "all t num: %d\n",scalar(@all_terms);
     my $graph = $self->get_graph_by_terms_on_path(\@all_terms,$p_terms, \%t);
     #graph for all children of the term (depth = -1)
     #all children is too overwhelming, this is done above
@@ -3221,6 +4133,7 @@ sub get_graph_by_acc {
 }
 
 
+##
 sub get_graph_by_terms {
     my $self = shift;
     my ($terms, $max_depth, $template, $close_below) =
@@ -3228,14 +4141,15 @@ sub get_graph_by_terms {
 
     my $g;
     if ($self->has_path_table) {
-        $g = $self->_get_graph_by_terms_denormalized(-terms=>$terms,
-                                                     -depth=>$max_depth,
-                                                     -template=>$template);
-    }
-    else {
-        $g = $self->_get_graph_by_terms_recursive(-terms=>$terms,
-                                                  -depth=>$max_depth,
-                                                  -template=>$template);
+      #print STDERR "DENORM:\n"; sleep 2;
+      $g = $self->_get_graph_by_terms_denormalized(-terms=>$terms,
+						   -depth=>$max_depth,
+						   -template=>$template);
+    }else {
+      #print STDERR "RECUR:\n"; sleep 2;
+      $g = $self->_get_graph_by_terms_recursive(-terms=>$terms,
+						-depth=>$max_depth,
+						-template=>$template);
     }
     if ($close_below) {
         $g->close_below($close_below);
@@ -3243,6 +4157,8 @@ sub get_graph_by_terms {
     return $g;
 }
 
+
+##
 sub _get_graph_by_terms_denormalized {
     my $self = shift;
 
@@ -3304,18 +4220,16 @@ sub _get_graph_by_terms_denormalized {
     if ($traverse_up) {
         my @cl = ();
         unless ($fetch_all) {
-            @cl = 
-              "(".
-                join(" OR ",
-                     map {"$PATH.term2_id=".$_->id} @$terms).")";
+            push(@cl,
+                 sqlin("$PATH.term2_id", [map {$_->id} @$terms]));
         }
         push(@cl,
              "$PATH.term1_id=term2term.term2_id");
-#why traverse up won't have max depth effect like traverse down,
-#want to add the following, don't know if it has unforseen effects
-#        if (defined($max_depth) && $max_depth > -1) {
-#            push(@cl, "distance <= ".($max_depth-1));
-#        }
+        #why traverse up won't have max depth effect like traverse down,
+        #want to add the following, don't know if it has unforseen effects
+        #        if (defined($max_depth) && $max_depth > -1) {
+        #            push(@cl, "distance <= ".($max_depth-1));
+        #        }
         my $hl =
           select_hashlist($dbh,
                           ["term2term", "$PATH"],
@@ -3350,9 +4264,12 @@ sub _get_graph_by_terms_denormalized {
     map {$graph->add_term($_)} @all_terms;
 
     # now lets add the arcs to the graph
-
     foreach my $rh (@rhl) {
-        my $type = $rh->{type};
+
+        my $type = $rh->{relationship_type_id};
+
+	#print STDERR "___" . $type . "\n"; sleep 2;
+
         my $t1 = $term_lookup[$rh->{term1_id}];
         my $t2 = $term_lookup[$rh->{term2_id}];
         if ($t2) {
@@ -3361,6 +4278,7 @@ sub _get_graph_by_terms_denormalized {
               GO::Model::Relationship->new({acc1=>$t1->acc,
                                             acc2=>$t2->acc});
             $type && $rel->type($type);
+            #$rel->type($type);
             $rel->complete(1) if $rh->{complete};
 
             # N+S conditions are marked 'complete'
@@ -3370,9 +4288,13 @@ sub _get_graph_by_terms_denormalized {
                 $rel->type($self->{rtype_by_id}->{$rh->{relationship_type_id}});
             }
             $graph->add_relationship($rel);
-        }
-        else {
+	    #print STDERR "INNER EDGE:" . $t2->acc;
+	    #print STDERR " " . $type;
+	    #print STDERR " " . $t1->acc;
+	    #print STDERR "\n";
+        }else {
             $graph->add_trailing_edge($t1->acc, $rh->{term2_id});
+	    #print STDERR "TRAILING EDGE:" . $t1->acc;
         }
     }
 
@@ -3391,6 +4313,7 @@ sub _get_graph_by_terms_denormalized {
     return $graph;
 }
 
+
 #construct graph based on term obj passed in (e.g. Amigo open nodes)
 #prerequisite: root term is among terms passed
 sub get_graph_by_terms_on_path {
@@ -3400,12 +4323,12 @@ sub get_graph_by_terms_on_path {
       rearrange([qw(terms root template)], @_);
 
     $template = $template || {};
-    $root_terms ||= [$self->get_root_term];
+    my $term_template = $template->{terms} || undef;
+    my $dbh = $self->dbh;
+    $root_terms ||= [$self->get_root_term($term_template)];
     unless (ref($root_terms) eq 'ARRAY') {
         $root_terms = [$root_terms];
     }
-    my $term_template = $template->{terms} || undef;
-    my $dbh = $self->dbh;
 
     my $graph = $self->create_graph_obj;
     #open nodes to their immediate children
@@ -3618,7 +4541,6 @@ sub _get_graph_by_terms_recursive {
         foreach my $term (@all_terms) {
             foreach my $entry (@{$parentnode_lookup[$term->id]}) {
                 my ($type, $type_id, $id, $complete) = @$entry;
-                printf STDERR "FOO: %s @$entry\n", $term->acc ;
                 my $t2 = $term_lookup[$id];
                 if ($t2) {
                     my $rel =
@@ -3773,6 +4695,7 @@ sub _get_graph_by_terms_recursive {
     $self->_get_n_children_h($graph) unless ($template->{no_n_children});
     return $graph;
 }
+
 sub get_graph_by_search {
     my $self = shift;
     my $dbh = $self->dbh;
@@ -3816,8 +4739,198 @@ sub get_deep_product_count {
     }
     my $filters = $self->filters || {};
     my $termconstr = $constr->{terms} || $constr->{term};
+
+    if (!$termconstr) {
+        # warning: will be deprecated
+        $termconstr = {acc=>'all'};
+    }
+
     if (!ref($termconstr) || ref($termconstr) ne "ARRAY") {
         $termconstr = [$termconstr];
+    }
+    if ($constr->{operator} && lc($constr->{operator}) eq 'and') {
+        return
+          $self->get_deep_products(-constraints=>$constr,
+                                   -options=>{count=>1});
+    }
+    my @terms = 
+      map {
+          if (ref($_) eq "HASH") {
+              $self->get_term($_);
+          }
+          elsif (ref($_)) {
+              # already is a term object
+              my $t = $_;
+              if (!$t->id) {
+                  $t = $self->get_term({acc=>$t->acc});
+              }
+              $t;
+          }
+          else {
+              $self->get_term({acc=>$_});
+          }
+      } @$termconstr;
+    if (@terms != 1) {
+        if (!$constr->{per_term}) {
+            $self->throw("term constraint must specify a single term OR per_term must be set");
+        }
+    }
+
+    my @tables = qw(gene_product_count);
+    my @where = ();
+    my $spdbs = 
+      $constr->{speciesdb} ||
+        $constr->{speciesdbs} || 
+          $filters->{speciesdb} ||
+            $filters->{speciesdbs};
+
+    my $taxids = 
+      $filters->{taxid} ||
+	$filters->{taxids} ||
+	  $constr->{taxid} ||
+	    $constr->{taxids};
+
+    # we have two ways of summing up gpcs: by summing the species partition
+    # or by summing the speciesdbname partition
+    # they can NOT be combined
+
+    my $partitioned_by;
+    if ($spdbs) {
+        if (!ref($spdbs)) {
+            $spdbs = [$spdbs];
+        }
+
+        if (@$spdbs) {
+            my @wanted = grep {$_ !~ /^\!/} @$spdbs;
+            my @unwanted = grep {/^\!/} @$spdbs;
+        
+            if (@wanted) {
+                push(@where,
+                     "(".join(" OR ", 
+                              map{"speciesdbname=".sql_quote($_,1)} @wanted).")");
+            }
+            if (@unwanted) {
+                push(@where,
+                     map{"speciesdbname!=".sql_quote(substr($_,1))} @unwanted);
+            }
+
+            # force exclusion of alternate partition
+            if ($GO_HAS_COUNT_BY_SPECIES) {
+                push(@where,"species_id IS NULL");
+            }
+
+            $partitioned_by = 'speciesdbname';
+        }
+    }
+
+    if ($taxids && $GO_HAS_COUNT_BY_SPECIES) {
+        if (!ref($taxids)) {
+            $taxids = [$taxids];
+        }
+
+        if (@$taxids) {
+
+            if ($partitioned_by) {
+                $self->throw("cannot filter by both speciesdb and taxid");
+            }
+
+            my @wanted = grep {$_ !~ /^\!/} @$taxids;
+            my @unwanted = grep {/^\!/} @$taxids;
+        
+            # force a partition by species
+            push(@where,"speciesdbname IS NULL");
+
+            if (@wanted) {
+                my $ids =
+                  select_vallist($dbh,
+                                 ["species"],
+                                 [sqlin("ncbi_taxa_id",\@wanted)],
+                                 ['id']);
+                push(@where,"(".sqlin('species_id',$ids).")");
+            }
+            if (@unwanted) {
+                my $ids =
+                  select_vallist($dbh,
+                                 ["species"],
+                                 [sqlin("ncbi_taxa_id",\@unwanted)],
+                                 ['id']);
+                push(@where,"(".sqlin('species_id',$ids,0,'NOT').")");
+            }
+
+            # force exclusion of alternate partition
+            push(@where,"speciesdbname IS NULL");
+            $partitioned_by = 'species_id';
+        }
+    }
+
+    # force exclusion of alternate partition
+    if (!$partitioned_by && $GO_HAS_COUNT_BY_SPECIES) {
+        push(@where,"species_id IS NULL");
+    }
+
+
+    if (@terms) {
+        my @termids = map {$_->id} @terms;
+        push(@where,
+             "term_id in (".join(", ", @termids).")");
+    }
+
+    my $hl;
+    if ($constr->{group_by}) {
+        if ($constr->{group_by} eq 'taxid') {
+            push(@tables, "species");
+            push(@where, "species.id=gene_product_count.species_id");
+            $hl =
+              select_hashlist(-dbh=>$dbh,
+                              -tables=>\@tables,
+                              -where=>\@where,
+                              -columns=>["term_id","ncbi_taxa_id",
+                                         "sum(product_count) AS c"],
+                              -group=>["term_id","ncbi_taxa_id"]);
+            if (!$constr->{per_term}) {
+                return {map { ($_->{ncbi_taxa_id} => $_->{c}) } @$hl};
+            }
+        }
+        else {
+            $self->throw("cannot group by $constr->{group_by}");
+        }
+    }
+    else {
+        $hl =
+          select_hashlist(-dbh=>$dbh,
+                          -tables=>\@tables,
+                          -where=>\@where,
+                          -columns=>["term_id",
+                                     "sum(product_count) AS c"],
+                          -group=>["term_id"]);
+        if (!$constr->{per_term}) {
+            return $hl->[0]->{"c"};
+        }
+    }
+    return $hl;
+}
+
+sub get_deep_product_count_grouped_by_taxid {
+    my $self = shift;
+    my $constr = shift || {};
+    my $dbh = $self->dbh;
+    if (!$self->has_count_table) {
+        if ($constr->{per_term}) {
+            return [];
+        }
+        else {
+            return 0;
+        }
+    }
+    my $filters = $self->filters || {};
+    my $termconstr = $constr->{terms} || $constr->{term};
+    if (!ref($termconstr) || ref($termconstr) ne "ARRAY") {
+        $termconstr = [$termconstr];
+    }
+    if ($constr->{operator} && lc($constr->{operator}) eq 'and') {
+        return
+          $self->get_deep_products(-constraints=>$constr,
+                                   -options=>{count=>1});
     }
     my @terms = 
       map {
@@ -3844,6 +4957,12 @@ sub get_deep_product_count {
           $filters->{speciesdb} ||
             $filters->{speciesdbs};
 
+    my $taxids = 
+      $filters->{taxid} ||
+	$filters->{taxids} ||
+	  $constr->{taxid} ||
+	    $constr->{taxids};
+
     if ($spdbs) {
         if (!ref($spdbs)) {
             $spdbs = [$spdbs];
@@ -3860,6 +4979,32 @@ sub get_deep_product_count {
         if (@unwanted) {
             push(@where,
                  map{"speciesdbname!=".sql_quote(substr($_,1))} @unwanted);
+        }
+    }
+
+    if ($taxids && $GO_HAS_COUNT_BY_SPECIES) {
+        if (!ref($taxids)) {
+            $taxids = [$taxids];
+        }
+        
+        my @wanted = grep {$_ !~ /^\!/} @$taxids;
+        my @unwanted = grep {/^\!/} @$taxids;
+        
+        if (@wanted) {
+            my $ids =
+              select_vallist($dbh,
+                             ["species"],
+                             [sqlin("ncbi_taxa_id",\@wanted)],
+                             ['id']);
+            push(@where,"(".sqlin('species_id',$ids).")");
+        }
+        if (@unwanted) {
+            my $ids =
+              select_vallist($dbh,
+                             ["species"],
+                             [sqlin("ncbi_taxa_id",\@unwanted)],
+                             ['id']);
+            push(@where,"(".sqlin('species_id',$ids,0,'NOT').")");
         }
     }
 
@@ -3913,7 +5058,7 @@ sub get_products {
     # the end
     my $ensure_unique = 0;
 
-    # basic query is over 32 tables:
+    # basic query is over 2 tables:
     my @tables_arr = ("gene_product",
                      "dbxref");
     # JOIN with dbxref table
@@ -3932,7 +5077,10 @@ sub get_products {
         $constr = {id=>$term->id};
     }
 	if ($constr->{dbxrefs}) {
-	    my $dbxrefs = $constr->{dbxrefs};
+		my $dbxrefs = $constr->{dbxrefs};
+		if (!ref($dbxrefs)) {
+			$dbxrefs = [$dbxrefs];
+		}
 
         my @q =
           map {
@@ -3943,9 +5091,9 @@ sub get_products {
               }
               else {
                   if ($_ =~ /(.*):(.*)/) {
-                      "(dbxref.xref_dbname = ".sql_quote($_->{xref_dbname}).
+                      "(dbxref.xref_dbname = ".sql_quote($1).
                         " AND ".
-                          "dbxref.xref_key = ".sql_quote($_->{xref_key}).")";
+                          "dbxref.xref_key = ".sql_quote($2).")";
                   }
                   else {
                       confess("$_ not a valid dbxref");
@@ -4091,7 +5239,8 @@ sub get_products {
 
             # --- EVIDENCE CODES ---
             # uhoh - duplicated code; could do with refactoring
-            my $evcodes = $constr->{evcodes} || $filters->{evcodes};
+            my $evcodes = $constr->{evcodes} || $filters->{evcodes}
+                       || $constr->{evcode} || $filters->{evcode};
             my @w=();
             if ($evcodes) {
 # often $evcodes points to an empty ARRAY
@@ -4124,7 +5273,8 @@ sub get_products {
             push @tables_arr, "association";
             push @constr_arr, "association.gene_product_id=gene_product.id";
             #need join evidence to get prod with assoc of the ev code(s)
-            my $evcodes = $constr->{evcodes} || $filters->{evcodes};
+            my $evcodes = $constr->{evcodes} || $filters->{evcodes}
+                       || $constr->{evcode} || $filters->{evcode};
             my @w=();
             if ($evcodes) {
 # often $evcodes points to an empty ARRAY
@@ -4267,6 +5417,39 @@ sub get_products {
 		 map{"species.ncbi_taxa_id!=$_"} @unwanted);
 	}
     }
+
+    # Secondary NCBI Taxa IDs
+    # for multi-species interactions
+    my $qualifier_taxids = 
+      $constr->{qualifier_taxid} ||
+        $constr->{qualifier_taxids} ||
+          $filters->{qualifier_taxid} ||
+            $filters->{qualifier_taxids};
+
+    if ($qualifier_taxids) {
+        if (!ref($qualifier_taxids)) {
+            $qualifier_taxids = [$qualifier_taxids];
+        }
+
+	push(@tables_arr, "species AS qualifier_species");
+	push(@tables_arr, "association_species_qualifier");
+	push(@constr_arr, "qualifier_species.id = association_species_qualifier.species_id");
+	push(@constr_arr, "association_species_qualifier.association_id = association.id");
+        push @constr_arr, "association.gene_product_id=gene_product.id";
+
+	my @wanted = grep {$_ !~ /^\!/} @$qualifier_taxids;
+	my @unwanted = grep {/^\!/} @$qualifier_taxids;
+
+	if (@wanted) {
+	    push(@constr_arr,
+		 "(".join(" OR ", 
+			  map{"qualifier_species.ncbi_taxa_id=$_"} @wanted).")");
+	}
+	if (@unwanted) {
+	    push(@constr_arr,
+		 map{"qualifier_species.ncbi_taxa_id!=$_"} @unwanted);
+	}
+    }
     
     if ($constr->{acc}) {
         push (@constr_arr, "dbxref.xref_key = ".sql_quote($constr->{acc}));
@@ -4322,7 +5505,7 @@ sub get_products {
             return $hl;
         }
         else {
-            @cols = ("count(distinct gene_product_id) AS c");
+            @cols = ("count(distinct gene_product.id) AS c");
             my $h = 
               select_hash(-dbh=>$dbh,
                           -tables=>\@tables_arr,
@@ -4461,7 +5644,7 @@ sub get_all_term_product_ids {
         }
     }
 
-    my $evcodes = $filters->{evcodes};
+    my $evcodes = $filters->{evcodes} || $filters->{evcode};
     my @w=();
     if ($evcodes) {
 # often $evcodes points to an empty ARRAY
@@ -4505,7 +5688,8 @@ sub get_all_term_product_ids {
     #exists $acc_h{} to check if any assoc
     return [map{[$_ => $acc_h{$_}]}grep{exists $acc_h{$_}}@acc];
 }
-#quickly found product ids for assoiciated term(s)
+
+#quickly find product ids for associated term(s)
 #ids is ordered by product symbol and return as [acc=>[ids]] and preserve acc order
 sub get_term_product_ids {
     my $self = shift;
@@ -4571,7 +5755,7 @@ sub get_term_product_ids {
         }
     }
 
-    my $evcodes = $filters->{evcodes};
+    my $evcodes = $filters->{evcodes} || $filters->{evcode};
     my @w=();
     if ($evcodes) {
 # often $evcodes points to an empty ARRAY
@@ -4638,9 +5822,8 @@ sub get_product_ids {
         my $s = $constr->{synonym};
         $s = [$s] unless (ref($s) eq 'ARRAY');
         push @$tables, "gene_product_synonym synonym";
-        ("gp.id=synonym.gene_product_id",
-         push @$where, "(".join(" or ",map{"synonym.product_synonym = '$_'"} @$s).")"
-        );
+        push @$where, "gp.id=synonym.gene_product_id";
+        push @$where, "(".join(" or ",map{"synonym.product_synonym = '$_'"} grep {$_} @$s).")";
     } elsif ($constr->{symbol}) {
         my $s = $constr->{symbol};
         $s = [$s] unless (ref($s) eq 'ARRAY');
@@ -4741,7 +5924,7 @@ sub get_product_ids {
         }
     }
 
-    my $evcodes = $filters->{evcodes};
+    my $evcodes = $filters->{evcodes} || $filters->{evcode};
     my @w=();
     if ($evcodes) {
 # often $evcodes points to an empty ARRAY
@@ -4903,7 +6086,7 @@ sub get_product_hash {
         }
     }
 
-    my $evcodes = $filters->{evcodes};
+    my $evcodes = $filters->{evcodes} || $filters->{evcode};
     my @w=();
     if ($evcodes) {
 # often $evcodes points to an empty ARRAY
@@ -5044,6 +6227,7 @@ sub _get_product_seqs {
     }
     return;
 }
+
 sub _get_product_synonyms {
     my $self = shift;
     my $pds = shift || return;
@@ -5064,6 +6248,7 @@ sub _get_product_synonyms {
     }
     return;
 }
+
 sub _get_product_species {
     my $self = shift;
     
@@ -5256,6 +6441,19 @@ sub get_seqs {
                 );
         }
     }
+
+    if ($constr->{dbxref_xref_key}) {
+	# not fetching a dbxref object to save a query - we need to do this millions of times
+	my $xref_key = $constr->{dbxref_xref_key};
+        push(@table_arr, "seq_dbxref");
+        push(@table_arr, "dbxref");
+	push(@constr_arr,
+	     "seq_dbxref.seq_id=seq.id",
+	     "seq_dbxref.dbxref_id = dbxref.id",
+	     "dbxref.xref_key= ".sql_quote($xref_key),
+	     );
+    }
+
     my @seqs = ();
     my $hl =
       select_hashlist($dbh,
@@ -5289,8 +6487,6 @@ sub get_seq {
     return shift @$pl;
 }
 
-
-
 sub get_species {
     my $sl = shift->get_species_list(@_);
     return $sl->[0];
@@ -5316,6 +6512,12 @@ sub get_species_list {
 	  GO::Model::Species->new($_);
       } @$hl;
     return \@sl;
+}
+
+sub get_species_hash {
+    my $self = shift;
+    my $sl = $self->get_species_list;
+    return {map{($_->ncbi_taxa_id=>$_)} @$sl};
 }
 
 sub get_speciesdb_dict {
@@ -5429,6 +6631,7 @@ sub get_qualifiers {
     map{$asso_h{$_}->qualifier_list($term_h{$_})}keys %term_h;
     return [values %term_h];
 }
+
 #should get assigned_by when get association?
 sub get_assigned_by {
     my $self = shift;
@@ -5448,7 +6651,6 @@ sub get_assigned_by {
         map{$_->assigned_by($h->{name})}@{$source_db_h{$h->{id}} || []};
     }
 }
-
 
 sub show {
     my $self = shift;
@@ -5639,6 +6841,38 @@ sub get_pairs {
 		     "rt.name, t2.acc, t1.acc");
     return $rows;
 }
+
+sub bulk_load {
+    my $self = shift;
+    my $tablesRef = shift; # hash ref of tables -> [ columns ]
+    my $term = shift;
+    my $dbh = $self->dbh;
+
+    my $lock = "lock tables ".join(' write, ',keys %$tablesRef);
+
+    $lock .= ' write';
+    print STDERR "$lock\n";
+
+    $dbh->do($lock);
+
+    for my $tab (keys %$tablesRef) {
+
+	next unless -e "$tab.txt";
+
+	my $cols = join(',', @{$tablesRef->{$tab}});
+
+	my $stmt = "load data local infile \'$tab.txt\' into table $tab";
+	$stmt .= " fields terminated by \'$term\'" if $term;
+	$stmt .= "  ($cols)";
+
+	print STDERR "$stmt\n";
+	$dbh->do($stmt);
+    }
+
+    $dbh->do("unlock tables");
+
+}
+    
 
 sub get_closure {
     my $self = shift;

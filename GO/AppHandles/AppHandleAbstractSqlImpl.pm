@@ -1,4 +1,4 @@
-# $Id: AppHandleAbstractSqlImpl.pm,v 1.2 2006/11/28 22:32:18 cmungall Exp $
+# $Id: AppHandleAbstractSqlImpl.pm,v 1.5 2009/05/22 23:07:25 sjcarbon Exp $
 #
 # This GO module is maintained by Chris Mungall <cjm@fruitfly.org>
 #
@@ -46,7 +46,8 @@ sub new {
     bless $self, $class;
     my $init_h = shift;
     $self->dbh($self->get_handle($init_h));
-    $self->filters({evcodes=>["!IEA"]});
+    ## COMMENTARY: A dubious thing in a post-!IEA world.
+    #$self->filters({evcodes=>["!IEA"]});
     $self->init;
     return $self;
 }
@@ -111,7 +112,9 @@ sub get_handle {
     my $init_h = shift || {};
 
     # precedence level 1: resource config file
-    my $rcfile = $init_h->{rcfile} || "$ENV{HOME}/.geneontologyrc";
+    my $rcf = $init_h->{rcfile} || '';
+    my $env = $ENV{HOME} || '';
+    my $rcfile = $rcf || $env . '/.geneontologyrc';
     if (-f $rcfile) {
         my $fh = FileHandle->new($rcfile);
         if ($fh) {
@@ -166,12 +169,17 @@ sub get_handle {
     if ($init_h->{dbsocket}) {
 	$dsn .= ";mysql_socket=$init_h->{dbsocket}";
     }
+    if ($init_h->{qw(local-infile)}) {
+	$dsn .= ";mysql_local_infile=$init_h->{qw(local-infile)}";
+    }
+
 
     if ($init_h->{dsn}) {
 	$dsn = $init_h->{dsn};
     }
     if($ENV{SQL_TRACE}) {print STDERR "DSN=$dsn\n"};
     my @params = ();
+
     if ($init_h->{dbuser}) {
 	push(@params,
 	     $init_h->{dbuser});
@@ -179,6 +187,7 @@ sub get_handle {
 	     $init_h->{dbauth});
         if($ENV{SQL_TRACE}) {print STDERR "PARAMS=@params\n"};
     }
+
     my $dbh;
     if ($init_h->{dbh}) {
 	$dbh = $init_h->{dbh};
