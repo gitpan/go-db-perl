@@ -55,8 +55,11 @@ my $input = $opt->{input};
 if ($input) {
     open(F,$input);
     while(<F>) {
-        chomp;
-        push(@ids,$_);
+      s/^[\r\s]+//;
+      s/[\r\s]+$//;
+      s/[\r\s]+/\n/g;
+      chomp;
+      push(@ids,$_);
     }
     close(F);
 }

@@ -1167,12 +1167,13 @@ sub get_enriched_term_hash {
 	$ps = $self->get_products($_);
       }
       ## Only add it if we haven't seen it.
+      ## TODO: if this section starts failing for users, see the fix
+      ## for the symmetric code in the sample prods section.
       if( ! $background_gp_by_id{$_->id} ){
 	push @background_prods, @$ps;
 	$background_gp_by_id{$_->id} = $_ foreach @$ps;
       }
     }
-
     ## Get # gps in db. For error, either database has no gene
     ## products or a filter that filters everything has been
     ## used.
@@ -1222,11 +1223,13 @@ sub get_enriched_term_hash {
     ## Only add if the gene product is in the background or we are
     ## using all of the ontology. Of course, this shouldn't be a
     ## problem since we've unioned the sample and background.
-    if( $use_all || $background_gp_by_id{$_->id} ){
-      ## Only add it if we haven't seen it.
-      if( ! $sample_gp_by_id{$_->id} ){
-       push @sample_prods, @$ps;
-       $sample_gp_by_id{$_->id} = $_ foreach @$ps;
+    foreach my $rgp (@$ps){
+      if( $use_all || $background_gp_by_id{$rgp->id} ){
+	## Only add it if we haven't seen it before.
+	if( ! $sample_gp_by_id{$rgp->id} ){
+	  push @sample_prods, $rgp;
+	  $sample_gp_by_id{$rgp->id} = $rgp;
+	}
       }
     }
   }
