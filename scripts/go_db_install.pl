@@ -372,9 +372,42 @@ EOC
   print "GO database stamp name is \"$db_stamp_name\".\n" if $opt_v;
   print "FTP archive name is \"$go_db_archive_name\".\n" if $opt_v;
 
-  ##
-  ## Check DB dates and look for db match.
-  ##
+  ###
+  ### Since we can't assume the existance of the file, we'll try and
+  ### download it (and hopefully doe on error) before we drop the
+  ### database.
+  ###
+
+  ## Create temp file for the FTP download.
+  my $tmp_dl_file = new File::Temp(TEMPLATE => 'go_db_download_XXXXX',
+				   DIR => $local{FS_DOWNLOAD_DIR},
+				   SUFFIX => $local{GO_DB_ARCH_EXTENSION});
+  die "[FS] Could not create temporary download file: $!" if ! $tmp_dl_file;
+  print "[FS] Created temporary download file.\n" if $opt_v;
+
+  ## Create temp file for the gunzipped database.
+  my $tmp_gunzip_file = new File::Temp(TEMPLATE => 'go_db_gunzipped_XXXXX',
+				       DIR => $local{FS_DOWNLOAD_DIR},
+				       SUFFIX => '');
+  die "[FS] Could not create temporary gunzip file: $!" if ! $tmp_gunzip_file;
+  print "[FS] Created temporary gunzip file.\n" if $opt_v;
+
+  ## Attempt to download.
+  print "[FTP] Starting GO database download (this may take some time)...\n"
+    if $opt_v;
+  #print "<<<" . $tmp_dl_file . ">>>\n";
+
+  $ftp->get( $go_db_archive_name, $tmp_dl_file )
+    or die "[FTP] Cannot download $go_db_archive_name: $!";
+  print "[FTP] Downloaded \"" . $go_db_archive_name . "\".\n"
+    if $opt_v;
+
+  ## Done FTP.
+  $ftp->quit;
+
+  ###
+  ### Check DB dates and look for db match.
+  ###
 
   ## Get listings from database.
   my @databases = show_databases($local{FS_MYSQLSHOW_FULL},
@@ -404,10 +437,10 @@ EOC
     }
   }
 
-  ##
-  ## Make sure that we have no database and no fresh stamp. Bail if we
-  ## are up-to-date.
-  ##
+  ###
+  ### Make sure that we have no database and no fresh stamp. Bail if
+  ### we are up-to-date.
+  ###
 
   ## The first case means that everything is normal and up-to-date, so
   ## we can just bail out here.
@@ -448,37 +481,9 @@ EOC
 
     }
 
-    ##
-    ## We now have no database and no fresh stamp. We'll continue with
-    ## a download and a complete reinstall of the database.
-    ##
-
-    ## Create temp file for the FTP download.
-    my $tmp_dl_file = new File::Temp(TEMPLATE => 'go_db_download_XXXXX',
-				     DIR => $local{FS_DOWNLOAD_DIR},
-				     SUFFIX => $local{GO_DB_ARCH_EXTENSION});
-    die "[FS] Could not create temporary download file: $!" if ! $tmp_dl_file;
-    print "[FS] Created temporary download file.\n" if $opt_v;
-
-    ## Create temp file for the gunzipped database.
-    my $tmp_gunzip_file = new File::Temp(TEMPLATE => 'go_db_gunzipped_XXXXX',
-					 DIR => $local{FS_DOWNLOAD_DIR},
-					 SUFFIX => '');
-    die "[FS] Could not create temporary gunzip file: $!" if ! $tmp_gunzip_file;
-    print "[FS] Created temporary gunzip file.\n" if $opt_v;
-
-    ## Attempt to download.
-    print "[FTP] Starting GO database download (this may take some time)...\n"
-      if $opt_v;
-    #print "<<<" . $tmp_dl_file . ">>>\n";
-
-    $ftp->get( $go_db_archive_name, $tmp_dl_file )
-      or die "[FTP] Cannot download $go_db_archive_name: $!";
-    print "[FTP] Downloaded \"" . $go_db_archive_name . "\".\n"
-      if $opt_v;
-
-    ## Done FTP.
-    $ftp->quit;
+    ###
+    ### Generate database from local file.
+    ###
 
     ## Database creation.
     create_database($local{FS_MYSQLADMIN_FULL},

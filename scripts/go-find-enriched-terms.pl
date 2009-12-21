@@ -102,14 +102,14 @@ foreach (@erows) {
     if ($exclude_term_by_acc{$_->{term}->acc}) {
         print '*';
     }
-    printf("%s %s \"%s\" sample:%d/%d database:%d/%d P-value:%s Corrected:%s Genes: %s\n",
+    printf("%s %s \"%s\" sample:%d/%d background:%d/%d P-value:%s Corrected:%s Genes: %s\n",
            $_->{term}->acc,
            ont2code($_->{term}->term_type),
            $_->{term}->name,
            $_->{n_gps_in_sample_annotated},
            $_->{n_gps_in_sample},
-           $_->{n_gps_in_database_annotated},
-           $_->{n_gps_in_database},
+           $_->{n_gps_in_background_annotated},
+           $_->{n_gps_in_background},
            $_->{p_value},
            $_->{corrected_p_value},
            join('; ',map {sprintf("%s[%s:%s]", $_->symbol, $_->xref->xref_dbname, $_->acc)} @{$_->{gps_in_sample_annotated}}))
